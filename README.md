@@ -1,6 +1,6 @@
 # muri-zkproof
 
-Zero-knowledge proof circuits and tooling that power MuriData’s proof-of-inclusion (PoI) workflow. This repository builds the Groth16 artifacts consumed by the on-chain verifier in [muri-contracts](https://github.com/MuriData/muri-contracts) and provides utilities for generating proofs over data commitments.
+Zero-knowledge proof circuits and tooling that power MuriData’s proof-of-integrity (PoI) workflow. This repository builds the Groth16 artifacts consumed by the on-chain verifier in [muri-contracts](https://github.com/MuriData/muri-contracts) and provides utilities for generating proofs over data commitments.
 
 ## Overview
 - Groth16 circuit (BN254) written with [`gnark`](https://github.com/ConsenSys/gnark) that proves a MiMC commitment matches a Merkle tree leaf selected deterministically from public randomness.
