@@ -24,3 +24,4 @@ go.work
 poi_prover.key
 poi_verifier.key
 poi_verifier.sol
+proof_fixture.json
