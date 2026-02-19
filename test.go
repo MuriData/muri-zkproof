@@ -61,7 +61,7 @@ func main() {
 	}
 
 	// Read whole file data and get chunks
-	chunks, err := readFileData("92986402.jpeg")
+	chunks, err := readFileData("README.md")
 	if err != nil {
 		log.Fatal("Failed to read file:", err)
 	}
