@@ -30,25 +30,27 @@ func (circuit *PoICircuit) Define(api frontend.API) error {
 	}
 	hasher := hash.NewMerkleDamgardHasher(api, p, 0)
 
-	// 1. Commitment: Prove Commitment = H(Bytes * Randomness)
-	// This proves that the public commitment corresponds to the user's private data,
-	// blinded by the public randomness.
+	// 1. Message: Compute msg = H(Bytes * Randomness).
+	// The hash binds the private data to the public randomness.
 	var preImage [config.NumChunks]frontend.Variable
 	for i := 0; i < config.NumChunks; i++ {
 		preImage[i] = api.Mul(circuit.Bytes[i], circuit.Randomness)
 	}
 	hasher.Write(preImage[:]...)
-	commitment := hasher.Sum()
+	msg := hasher.Sum()
 	hasher.Reset()
-	api.AssertIsEqual(circuit.Commitment, commitment)
 
-	// 2. Signature: Prove the commitment was signed by the prover's public key.
-	// This establishes authorship of the commitment.
+	// 2. Signature: Verify the EdDSA signature over msg.
 	curve, err := twistededwards.NewEdCurve(api, tedwards.BN254)
 	if err != nil {
 		return err
 	}
-	err = eddsa.Verify(curve, circuit.Signature, commitment, circuit.PublicKey, hasher)
+	err = eddsa.Verify(curve, circuit.Signature, msg, circuit.PublicKey, hasher)
+
+	// 3. Commitment: The public commitment equals the signature's R.X (nonce point).
+	// R.X is deterministic (derived from private key + msg) and unpredictable
+	// without the private key, making it suitable as the next randomness.
+	api.AssertIsEqual(circuit.Commitment, circuit.Signature.R.X)
 	if err != nil {
 		return err
 	}

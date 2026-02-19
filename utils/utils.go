@@ -8,6 +8,7 @@ import (
 	"github.com/MuriData/muri-zkproof/config"
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr"
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr/poseidon2"
+	edwardsbn254 "github.com/consensys/gnark-crypto/ecc/bn254/twistededwards"
 	tedwards "github.com/consensys/gnark-crypto/ecc/twistededwards"
 	"github.com/consensys/gnark-crypto/signature"
 	"github.com/consensys/gnark-crypto/signature/eddsa"
@@ -139,12 +140,24 @@ func GenerateSigner() (signature.Signer, error) {
 	return signer, nil
 }
 
-// Sign signs the commitment using the given signer
-func Sign(commitment []byte, signer signature.Signer) ([]byte, error) {
+// Sign signs the message using the given signer
+func Sign(msg []byte, signer signature.Signer) ([]byte, error) {
 	hasher := poseidon2.NewMerkleDamgardHasher()
-	signature, err := signer.Sign(commitment, hasher)
+	signature, err := signer.Sign(msg, hasher)
 	if err != nil {
 		return nil, err
 	}
 	return signature, nil
+}
+
+// SignatureRX extracts the R point's X coordinate from a BN254 EdDSA signature.
+// The first 32 bytes of the signature are the compressed R point.
+func SignatureRX(sig []byte) (*big.Int, error) {
+	var point edwardsbn254.PointAffine
+	if _, err := point.SetBytes(sig[:32]); err != nil {
+		return nil, err
+	}
+	rx := new(big.Int)
+	point.X.BigInt(rx)
+	return rx, nil
 }

@@ -146,9 +146,9 @@ func main() {
 
 	fmt.Printf("Proof depth (levels): %d\n", len(merkleProof))
 
-	// Calculate the Poseidon2 hash outside the circuit directly from the selected chunk
-	calculatedCommitment := utils.Hash(testData, randomness)
-	fmt.Printf("Calculated Poseidon2 hash: 0x%x\n", calculatedCommitment.Bytes())
+	// Compute message = H(data * randomness) for EdDSA signing
+	msg := utils.Hash(testData, randomness)
+	fmt.Printf("Poseidon2 message hash: 0x%x\n", msg.Bytes())
 
 	signer, err := utils.GenerateSigner()
 	if err != nil {
@@ -156,15 +156,20 @@ func main() {
 	}
 
 	publicKey := signer.Public()
-
 	fmt.Printf("\nPublic key (hex): 0x%x\n", publicKey.Bytes())
 
-	signature, err := utils.Sign(calculatedCommitment.Bytes(), signer)
+	signature, err := utils.Sign(msg.Bytes(), signer)
 	if err != nil {
 		log.Fatal(err)
 	}
-
 	fmt.Printf("Signature (hex): 0x%x\n", signature)
+
+	// Commitment = R.X from the signature (used as next randomness)
+	commitment, err := utils.SignatureRX(signature)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("Commitment (sig R.X): 0x%x\n", commitment.Bytes())
 
 	// Prepare Merkle proof data for the circuit
 	fmt.Println("\n=== Preparing Circuit Assignment ===")
@@ -193,7 +198,7 @@ func main() {
 
 	assignment := circuits.PoICircuit{}
 	assignment.Bytes = utils.Bytes2Field(testData)
-	assignment.Commitment = calculatedCommitment
+	assignment.Commitment = commitment
 	assignment.Randomness = randomness
 	assignment.PublicKey.Assign(tedwards.BN254, publicKey.Bytes())
 	assignment.Signature.Assign(tedwards.BN254, signature)
