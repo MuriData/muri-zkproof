@@ -3,7 +3,8 @@ package circuits
 import (
 	"github.com/MuriData/muri-zkproof/config"
 	"github.com/consensys/gnark/frontend"
-	"github.com/consensys/gnark/std/hash/mimc"
+	"github.com/consensys/gnark/std/hash"
+	"github.com/consensys/gnark/std/permutation/poseidon2"
 )
 
 // MerkleProofCircuit represents a circuit for verifying Merkle proofs
@@ -19,11 +20,12 @@ type MerkleProofCircuit struct {
 
 // Define implements the circuit logic for Merkle proof verification
 func (circuit *MerkleProofCircuit) Define(api frontend.API) error {
-	// Initialize MiMC hasher
-	hasher, err := mimc.NewMiMC(api)
+	// Initialize Poseidon2 hasher
+	p, err := poseidon2.NewPoseidon2FromParameters(api, 2, 6, 50)
 	if err != nil {
 		return err
 	}
+	hasher := hash.NewMerkleDamgardHasher(api, p, 0)
 
 	currentHash := circuit.LeafValue
 

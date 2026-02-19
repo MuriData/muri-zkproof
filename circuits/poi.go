@@ -5,7 +5,8 @@ import (
 	tedwards "github.com/consensys/gnark-crypto/ecc/twistededwards"
 	"github.com/consensys/gnark/frontend"
 	"github.com/consensys/gnark/std/algebra/native/twistededwards"
-	"github.com/consensys/gnark/std/hash/mimc"
+	"github.com/consensys/gnark/std/hash"
+	"github.com/consensys/gnark/std/permutation/poseidon2"
 	"github.com/consensys/gnark/std/signature/eddsa"
 )
 
@@ -23,10 +24,11 @@ type PoICircuit struct {
 }
 
 func (circuit *PoICircuit) Define(api frontend.API) error {
-	hasher, err := mimc.NewMiMC(api)
+	p, err := poseidon2.NewPoseidon2FromParameters(api, 2, 6, 50)
 	if err != nil {
 		return err
 	}
+	hasher := hash.NewMerkleDamgardHasher(api, p, 0)
 
 	// 1. Commitment: Prove Commitment = H(Bytes * Randomness)
 	// This proves that the public commitment corresponds to the user's private data,
@@ -46,7 +48,7 @@ func (circuit *PoICircuit) Define(api frontend.API) error {
 	if err != nil {
 		return err
 	}
-	err = eddsa.Verify(curve, circuit.Signature, commitment, circuit.PublicKey, &hasher)
+	err = eddsa.Verify(curve, circuit.Signature, commitment, circuit.PublicKey, hasher)
 	if err != nil {
 		return err
 	}

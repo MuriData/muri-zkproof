@@ -17,14 +17,13 @@ import (
 	"github.com/consensys/gnark/frontend/cs/r1cs"
 )
 
-func readFileData(filename string) ([][]byte, error) {
-	wholeFileData, err := os.ReadFile(filename)
+func generateRandomData(size int) ([]byte, error) {
+	data := make([]byte, size)
+	_, err := rand.Read(data)
 	if err != nil {
 		return nil, err
 	}
-
-	chunks := utils.SplitIntoChunks(wholeFileData)
-	return chunks, nil
+	return data, nil
 }
 
 func main() {
@@ -60,12 +59,14 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// Read whole file data and get chunks
-	chunks, err := readFileData("README.md")
+	// Generate random test data (128 KB = 8 chunks of 16 KB)
+	testFileSize := 8 * config.FileSize
+	wholeFileData, err := generateRandomData(testFileSize)
 	if err != nil {
-		log.Fatal("Failed to read file:", err)
+		log.Fatal("Failed to generate random data:", err)
 	}
-	fmt.Printf("Read %d chunks from file\n", len(chunks))
+	chunks := utils.SplitIntoChunks(wholeFileData)
+	fmt.Printf("Generated %d bytes of random data (%d chunks)\n", testFileSize, len(chunks))
 	leafCount := len(chunks)
 
 	// Generate random scalar field element for both commitment and chunk selection
@@ -145,9 +146,9 @@ func main() {
 
 	fmt.Printf("Proof depth (levels): %d\n", len(merkleProof))
 
-	// Calculate the MiMC hash outside the circuit directly from the selected chunk
+	// Calculate the Poseidon2 hash outside the circuit directly from the selected chunk
 	calculatedCommitment := utils.Hash(testData, randomness)
-	fmt.Printf("Calculated MiMC hash: 0x%x\n", calculatedCommitment.Bytes())
+	fmt.Printf("Calculated Poseidon2 hash: 0x%x\n", calculatedCommitment.Bytes())
 
 	signer, err := utils.GenerateSigner()
 	if err != nil {

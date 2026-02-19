@@ -6,7 +6,7 @@ import (
 	"math/big"
 
 	"github.com/MuriData/muri-zkproof/config"
-	"github.com/consensys/gnark-crypto/ecc/bn254/fr/mimc"
+	"github.com/consensys/gnark-crypto/ecc/bn254/fr/poseidon2"
 )
 
 // MerkleNode represents a node in the Merkle tree
@@ -72,7 +72,7 @@ func SplitIntoChunks(data []byte) [][]byte {
 	return chunks
 }
 
-// hashChunk hashes a single chunk using MiMC with randomness = 1
+// hashChunk hashes a single chunk using Poseidon2 with randomness = 1
 func hashChunk(chunk []byte) *big.Int {
 	randomness := big.NewInt(1)
 	return Hash(chunk, randomness)
@@ -80,7 +80,7 @@ func hashChunk(chunk []byte) *big.Int {
 
 // hashNodes hashes two node hashes together to create parent hash
 func hashNodes(left, right *big.Int) *big.Int {
-	h := mimc.NewMiMC()
+	h := poseidon2.NewMerkleDamgardHasher()
 
 	// Write left hash bytes
 	leftBytes := left.Bytes()

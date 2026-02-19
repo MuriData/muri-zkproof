@@ -7,7 +7,7 @@ import (
 
 	"github.com/MuriData/muri-zkproof/config"
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr"
-	"github.com/consensys/gnark-crypto/ecc/bn254/fr/mimc"
+	"github.com/consensys/gnark-crypto/ecc/bn254/fr/poseidon2"
 	tedwards "github.com/consensys/gnark-crypto/ecc/twistededwards"
 	"github.com/consensys/gnark-crypto/signature"
 	"github.com/consensys/gnark-crypto/signature/eddsa"
@@ -88,9 +88,9 @@ func Field2Bytes(elements []frontend.Variable, originalSize int) []byte {
 	return result
 }
 
-// Hash hashes the data using the MiMC hash function and the given randomness
+// Hash hashes the data using the Poseidon2 hash function and the given randomness
 func Hash(data []byte, randomness *big.Int) *big.Int {
-	h := mimc.NewMiMC()
+	h := poseidon2.NewMerkleDamgardHasher()
 
 	// randomness as field element (only once)
 	var randElement fr.Element
@@ -141,7 +141,7 @@ func GenerateSigner() (signature.Signer, error) {
 
 // Sign signs the commitment using the given signer
 func Sign(commitment []byte, signer signature.Signer) ([]byte, error) {
-	hasher := mimc.NewMiMC()
+	hasher := poseidon2.NewMerkleDamgardHasher()
 	signature, err := signer.Sign(commitment, hasher)
 	if err != nil {
 		return nil, err
