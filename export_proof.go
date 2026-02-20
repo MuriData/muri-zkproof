@@ -102,21 +102,28 @@ func main() {
 	testData := chunks[int(chunkIndex)%leafCount]
 	fmt.Printf("Selected chunk index: %d\n", chunkIndex)
 
-	// 7. Compute commitment
-	calculatedCommitment := utils.Hash(testData, randomness)
-	fmt.Printf("Commitment: 0x%x\n", calculatedCommitment.Bytes())
+	// 7. Compute message hash = H(data * randomness) and sign it
+	msg := utils.Hash(testData, randomness)
+	fmt.Printf("Message hash: 0x%x\n", msg.Bytes())
 
-	// 8. Generate EdDSA key pair and sign using gnark-crypto's typed API
+	// 8. Generate EdDSA key pair and sign the message
 	signer, err := utils.GenerateSigner()
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	publicKey := signer.Public()
-	sig, err := utils.Sign(calculatedCommitment.Bytes(), signer)
+	sig, err := utils.Sign(msg.Bytes(), signer)
 	if err != nil {
 		log.Fatal(err)
 	}
+
+	// 9. Commitment = signature R.X (nonce point X coordinate)
+	commitment, err := utils.SignatureRX(sig)
+	if err != nil {
+		log.Fatal("Failed to extract signature R.X:", err)
+	}
+	fmt.Printf("Commitment (sig R.X): 0x%x\n", commitment.Bytes())
 
 	// Extract X and Y from the public key using gnark-crypto's native eddsa type
 	pkBytes := publicKey.Bytes()
@@ -133,7 +140,7 @@ func main() {
 	fmt.Printf("Public Key X: 0x%064x\n", pubKeyX)
 	fmt.Printf("Public Key Y: 0x%064x\n", pubKeyY)
 
-	// 9. Prepare Merkle proof
+	// 10. Prepare Merkle proof
 	merkleProof, directions, err := merkleTree.GetMerkleProof(int(chunkIndex))
 	if err != nil {
 		log.Fatal(err)
@@ -158,10 +165,10 @@ func main() {
 		proofDirections[i] = 0
 	}
 
-	// 10. Build witness
+	// 11. Build witness
 	assignment := circuits.PoICircuit{}
 	assignment.Bytes = utils.Bytes2Field(testData)
-	assignment.Commitment = calculatedCommitment
+	assignment.Commitment = commitment
 	assignment.Randomness = randomness
 	assignment.PublicKey.Assign(tedwards.BN254, pkBytes)
 	assignment.Signature.Assign(tedwards.BN254, sig)
@@ -181,21 +188,21 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// 11. Generate proof
+	// 12. Generate proof
 	fmt.Println("Generating proof...")
 	proof, err := groth16.Prove(ccs, pk, witness)
 	if err != nil {
 		log.Fatal("Proof generation failed:", err)
 	}
 
-	// 12. Verify proof in Go
+	// 13. Verify proof in Go
 	err = groth16.Verify(proof, vk, publicWitness)
 	if err != nil {
 		log.Fatal("Proof verification failed:", err)
 	}
 	fmt.Println("Proof verified successfully in Go!")
 
-	// 13. Extract proof points for Solidity
+	// 14. Extract proof points for Solidity
 	bn254Proof := proof.(*groth16bn254.Proof)
 
 	aX := new(big.Int)
@@ -223,7 +230,7 @@ func main() {
 	fixture := ProofFixture{
 		Randomness: fmt.Sprintf("0x%064x", randomness),
 		RootHash:   fmt.Sprintf("0x%064x", merkleTree.GetRoot()),
-		Commitment: fmt.Sprintf("0x%064x", calculatedCommitment),
+		Commitment: fmt.Sprintf("0x%064x", commitment),
 		PublicKeyX: fmt.Sprintf("0x%064x", pubKeyX),
 		PublicKeyY: fmt.Sprintf("0x%064x", pubKeyY),
 	}
@@ -263,8 +270,7 @@ func main() {
 
 	// Public witness info
 	fmt.Println("\n=== PUBLIC WITNESS ORDER ===")
-	fmt.Println("In Solidity verifier: [randomness, rootHash, commitment, publicKeyX, publicKeyY]")
-	fmt.Println("In gnark circuit:     [commitment, randomness, publicKey.A.X, publicKey.A.Y, rootHash]")
+	fmt.Println("In gnark circuit (= Solidity order): [commitment, randomness, publicKey.A.X, publicKey.A.Y, rootHash]")
 	var pubWitBuf bytes.Buffer
 	_, err = publicWitness.WriteTo(&pubWitBuf)
 	if err != nil {
@@ -272,10 +278,7 @@ func main() {
 	}
 	fmt.Printf("Public witness size: %d bytes\n", pubWitBuf.Len())
 
-	// Verify gnark public input ordering matches Solidity
 	// gnark orders: commitment(0), randomness(1), pubkey.A.X(2), pubkey.A.Y(3), rootHash(4)
-	// Solidity expects: [randomness, rootHash, commitment, publicKeyX, publicKeyY]
-	// The verifier contract uses publicInputMSM which computes L_pub as a linear combination
 	// gnark's ExportSolidity maps gnark indices [0..4] to Solidity indices in the same order
 	fmt.Println("\ngnark public input order (from circuit struct tags):")
 	fmt.Println("  [0] commitment")
