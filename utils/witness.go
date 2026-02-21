@@ -39,7 +39,7 @@ func PrepareWitness(secretKey, randomness *big.Int, chunks [][]byte, merkleTree 
 	// leafBit = 1 - randBit  (see circuit step 4)
 	treeHeight := merkleTree.GetHeight() - 1
 	if treeHeight > config.MaxTreeDepth {
-		treeHeight = config.MaxTreeDepth
+		return nil, fmt.Errorf("tree height %d exceeds MaxTreeDepth %d", treeHeight, config.MaxTreeDepth)
 	}
 
 	var chunkIndex int64
@@ -60,8 +60,7 @@ func PrepareWitness(secretKey, randomness *big.Int, chunks [][]byte, merkleTree 
 		return nil, fmt.Errorf("get merkle proof: %w", err)
 	}
 	if len(merkleProof) > config.MaxTreeDepth {
-		merkleProof = merkleProof[:config.MaxTreeDepth]
-		directions = directions[:config.MaxTreeDepth]
+		return nil, fmt.Errorf("merkle proof length %d exceeds MaxTreeDepth %d", len(merkleProof), config.MaxTreeDepth)
 	}
 
 	var proofPath [config.MaxTreeDepth]frontend.Variable
