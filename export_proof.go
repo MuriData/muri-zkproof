@@ -66,97 +66,38 @@ func main() {
 	for i := range testFileData {
 		testFileData[i] = byte(i % 256)
 	}
-
 	chunks := utils.SplitIntoChunks(testFileData)
 	fmt.Printf("Chunks: %d\n", len(chunks))
 
-	// 4. Use a deterministic randomness
+	// 4. Deterministic randomness and secret key
 	randomness := new(big.Int).SetUint64(42)
 	var randFr fr.Element
 	randFr.SetBigInt(randomness)
 	randomness = new(big.Int)
 	randFr.BigInt(randomness)
 
-	// 5. Generate Merkle tree
-	merkleTree := utils.GenerateMerkleTree(chunks)
-	fmt.Printf("Merkle root: 0x%x\n", merkleTree.GetRoot().Bytes())
-	fmt.Printf("Leaves: %d, Height: %d\n", merkleTree.GetLeafCount(), merkleTree.GetHeight())
-
-	// 6. Deterministic leaf selection
-	treeHeight := merkleTree.GetHeight() - 1
-	if treeHeight > config.MaxTreeDepth {
-		treeHeight = config.MaxTreeDepth
-	}
-
-	var chunkIndex int64
-	for i := 0; i < treeHeight; i++ {
-		bit := randomness.Bit(i)
-		leafBit := 1 - int(bit)
-		chunkIndex |= int64(leafBit) << i
-	}
-
-	leafCount := len(chunks)
-	testData := chunks[int(chunkIndex)%leafCount]
-	fmt.Printf("Selected chunk index: %d\n", chunkIndex)
-
-	// 7. Compute message hash = H(data * randomness)
-	msg := utils.Hash(testData, randomness)
-	fmt.Printf("Message hash: 0x%x\n", msg.Bytes())
-
-	// 8. Use a deterministic secret key and derive public key = H(secretKey)
 	secretKey := new(big.Int).SetUint64(12345)
 	var skFr fr.Element
 	skFr.SetBigInt(secretKey)
 	secretKey = new(big.Int)
 	skFr.BigInt(secretKey)
 
-	publicKey := utils.DerivePublicKey(secretKey)
-	fmt.Printf("Secret key: 0x%064x\n", secretKey)
-	fmt.Printf("Public key (H(sk)): 0x%064x\n", publicKey)
+	// 5. Build Merkle tree and prepare the full witness
+	merkleTree := utils.GenerateMerkleTree(chunks)
+	fmt.Printf("Merkle root: 0x%x\n", merkleTree.GetRoot().Bytes())
+	fmt.Printf("Leaves: %d, Height: %d\n", merkleTree.GetLeafCount(), merkleTree.GetHeight())
 
-	// 9. VRF commitment = H(secretKey, msg, randomness, publicKey)
-	commitment := utils.DeriveCommitment(secretKey, msg, randomness, publicKey)
-	fmt.Printf("Commitment: 0x%064x\n", commitment)
-
-	// 10. Prepare Merkle proof
-	merkleProof, directions, err := merkleTree.GetMerkleProof(int(chunkIndex))
+	result, err := utils.PrepareWitness(secretKey, randomness, chunks, merkleTree)
 	if err != nil {
-		log.Fatal(err)
-	}
-	if len(merkleProof) > config.MaxTreeDepth {
-		merkleProof = merkleProof[:config.MaxTreeDepth]
-		directions = directions[:config.MaxTreeDepth]
+		log.Fatal("Failed to prepare witness:", err)
 	}
 
-	var proofPath [config.MaxTreeDepth]frontend.Variable
-	var proofDirections [config.MaxTreeDepth]frontend.Variable
-	for i := 0; i < len(merkleProof) && i < config.MaxTreeDepth; i++ {
-		proofPath[i] = merkleProof[i]
-		if directions[i] {
-			proofDirections[i] = 0
-		} else {
-			proofDirections[i] = 1
-		}
-	}
-	for i := len(merkleProof); i < config.MaxTreeDepth; i++ {
-		proofPath[i] = 0
-		proofDirections[i] = 0
-	}
+	fmt.Printf("Selected chunk index: %d\n", result.ChunkIndex)
+	fmt.Printf("Public key (H(sk)): 0x%064x\n", result.PublicKey)
+	fmt.Printf("Commitment: 0x%064x\n", result.Commitment)
 
-	// 11. Build witness
-	assignment := circuits.PoICircuit{}
-	assignment.SecretKey = secretKey
-	assignment.Bytes = utils.Bytes2Field(testData)
-	assignment.Commitment = commitment
-	assignment.Randomness = randomness
-	assignment.PublicKey = publicKey
-	assignment.RootHash = merkleTree.GetRoot()
-	assignment.MerkleProof.RootHash = merkleTree.GetRoot()
-	assignment.MerkleProof.LeafValue = merkleTree.Leaves[chunkIndex].Hash
-	assignment.MerkleProof.ProofPath = proofPath
-	assignment.MerkleProof.Directions = proofDirections
-
-	witness, err := frontend.NewWitness(&assignment, ecc.BN254.ScalarField())
+	// 6. Create witness and generate proof
+	witness, err := frontend.NewWitness(&result.Assignment, ecc.BN254.ScalarField())
 	if err != nil {
 		log.Fatal("Failed to create witness:", err)
 	}
@@ -166,21 +107,20 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// 12. Generate proof
 	fmt.Println("Generating proof...")
 	proof, err := groth16.Prove(ccs, pk, witness)
 	if err != nil {
 		log.Fatal("Proof generation failed:", err)
 	}
 
-	// 13. Verify proof in Go
+	// 7. Verify proof in Go
 	err = groth16.Verify(proof, vk, publicWitness)
 	if err != nil {
 		log.Fatal("Proof verification failed:", err)
 	}
 	fmt.Println("Proof verified successfully in Go!")
 
-	// 14. Extract proof points for Solidity
+	// 8. Extract proof points for Solidity
 	bn254Proof := proof.(*groth16bn254.Proof)
 
 	aX := new(big.Int)
@@ -208,8 +148,8 @@ func main() {
 	fixture := ProofFixture{
 		Randomness: fmt.Sprintf("0x%064x", randomness),
 		RootHash:   fmt.Sprintf("0x%064x", merkleTree.GetRoot()),
-		Commitment: fmt.Sprintf("0x%064x", commitment),
-		PublicKey:  fmt.Sprintf("0x%064x", publicKey),
+		Commitment: fmt.Sprintf("0x%064x", result.Commitment),
+		PublicKey:  fmt.Sprintf("0x%064x", result.PublicKey),
 	}
 	for i := 0; i < 8; i++ {
 		fixture.SolidityProof[i] = fmt.Sprintf("0x%064x", solidityProof[i])
