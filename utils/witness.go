@@ -28,9 +28,11 @@ type WitnessResult struct {
 //   - chunks:     raw file data split into config.FileSize-sized chunks
 //   - merkleTree: Merkle tree built from the same chunks
 func PrepareWitness(secretKey, randomness *big.Int, chunks [][]byte, merkleTree *MerkleTree) (*WitnessResult, error) {
-	leafCount := len(merkleTree.Leaves)
-	if leafCount == 0 {
+	if len(merkleTree.Leaves) == 0 {
 		return nil, fmt.Errorf("merkle tree has no leaves")
+	}
+	if len(chunks) == 0 {
+		return nil, fmt.Errorf("no chunks provided")
 	}
 
 	// --- Deterministic leaf selection from randomness bits ---
@@ -47,7 +49,10 @@ func PrepareWitness(secretKey, randomness *big.Int, chunks [][]byte, merkleTree 
 		chunkIndex |= int64(leafBit) << i
 	}
 
-	testData := chunks[int(chunkIndex)%leafCount]
+	// Index into the original (unpadded) chunks. The Merkle tree may have
+	// more leaves than chunks due to power-of-two padding, so use the
+	// original chunk count to wrap around safely.
+	testData := chunks[int(chunkIndex)%len(chunks)]
 
 	// --- Merkle proof ---
 	merkleProof, directions, err := merkleTree.GetMerkleProof(int(chunkIndex))
