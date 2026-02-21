@@ -28,6 +28,11 @@ func (circuit *PoICircuit) Define(api frontend.API) error {
 
 	// 1. Key ownership: publicKey == H(secretKey).
 	//    The on-chain registered public key is the hash of the secret key.
+	//    Both must be non-zero: a zero secret key is trivially known and a
+	//    zero public key would bypass on-chain identity checks.
+	api.AssertIsEqual(api.IsZero(circuit.SecretKey), 0)
+	api.AssertIsEqual(api.IsZero(circuit.PublicKey), 0)
+
 	keyHasher := hash.NewMerkleDamgardHasher(api, p, 0)
 	keyHasher.Write(circuit.SecretKey)
 	derivedPubKey := keyHasher.Sum()
