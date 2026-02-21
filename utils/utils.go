@@ -6,12 +6,9 @@ import (
 	"math/big"
 
 	"github.com/MuriData/muri-zkproof/config"
+	"github.com/consensys/gnark-crypto/ecc"
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr"
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr/poseidon2"
-	edwardsbn254 "github.com/consensys/gnark-crypto/ecc/bn254/twistededwards"
-	tedwards "github.com/consensys/gnark-crypto/ecc/twistededwards"
-	"github.com/consensys/gnark-crypto/signature"
-	"github.com/consensys/gnark-crypto/signature/eddsa"
 	"github.com/consensys/gnark/frontend"
 )
 
@@ -131,33 +128,51 @@ func Hash(data []byte, randomness *big.Int) *big.Int {
 	return new(big.Int).SetBytes(h.Sum(nil))
 }
 
-// GenerateSigner generates a new signer for the given curve
-func GenerateSigner() (signature.Signer, error) {
-	signer, err := eddsa.New(tedwards.BN254, rand.Reader)
-	if err != nil {
-		return nil, err
+// GenerateSecretKey generates a random secret key as a non-zero BN254 scalar field element.
+func GenerateSecretKey() (*big.Int, error) {
+	for {
+		sk, err := rand.Int(rand.Reader, ecc.BN254.ScalarField())
+		if err != nil {
+			return nil, err
+		}
+		if sk.Sign() != 0 {
+			return sk, nil
+		}
 	}
-	return signer, nil
 }
 
-// Sign signs the message using the given signer
-func Sign(msg []byte, signer signature.Signer) ([]byte, error) {
-	hasher := poseidon2.NewMerkleDamgardHasher()
-	signature, err := signer.Sign(msg, hasher)
-	if err != nil {
-		return nil, err
-	}
-	return signature, nil
+// DerivePublicKey computes publicKey = H(secretKey) using Poseidon2, matching the circuit.
+func DerivePublicKey(secretKey *big.Int) *big.Int {
+	h := poseidon2.NewMerkleDamgardHasher()
+
+	var skFr fr.Element
+	skFr.SetBigInt(secretKey)
+	skBytes := skFr.Bytes()
+	h.Write(skBytes[:])
+
+	return new(big.Int).SetBytes(h.Sum(nil))
 }
 
-// SignatureRX extracts the R point's X coordinate from a BN254 EdDSA signature.
-// The first 32 bytes of the signature are the compressed R point.
-func SignatureRX(sig []byte) (*big.Int, error) {
-	var point edwardsbn254.PointAffine
-	if _, err := point.SetBytes(sig[:32]); err != nil {
-		return nil, err
-	}
-	rx := new(big.Int)
-	point.X.BigInt(rx)
-	return rx, nil
+// DeriveCommitment computes the VRF-style commitment matching the circuit:
+// commitment = H(secretKey, msg, randomness, publicKey)
+func DeriveCommitment(secretKey, msg, randomness, publicKey *big.Int) *big.Int {
+	h := poseidon2.NewMerkleDamgardHasher()
+
+	var skFr, msgFr, randFr, pkFr fr.Element
+	skFr.SetBigInt(secretKey)
+	msgFr.SetBigInt(msg)
+	randFr.SetBigInt(randomness)
+	pkFr.SetBigInt(publicKey)
+
+	skBytes := skFr.Bytes()
+	msgBytes := msgFr.Bytes()
+	randBytes := randFr.Bytes()
+	pkBytes := pkFr.Bytes()
+
+	h.Write(skBytes[:])
+	h.Write(msgBytes[:])
+	h.Write(randBytes[:])
+	h.Write(pkBytes[:])
+
+	return new(big.Int).SetBytes(h.Sum(nil))
 }

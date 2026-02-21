@@ -13,8 +13,6 @@ import (
 	"github.com/MuriData/muri-zkproof/utils"
 	"github.com/consensys/gnark-crypto/ecc"
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr"
-	"github.com/consensys/gnark-crypto/ecc/bn254/twistededwards/eddsa"
-	tedwards "github.com/consensys/gnark-crypto/ecc/twistededwards"
 	"github.com/consensys/gnark/backend/groth16"
 	groth16bn254 "github.com/consensys/gnark/backend/groth16/bn254"
 	"github.com/consensys/gnark/frontend"
@@ -27,8 +25,7 @@ type ProofFixture struct {
 	Randomness    string    `json:"randomness"`
 	RootHash      string    `json:"root_hash"`
 	Commitment    string    `json:"commitment"`
-	PublicKeyX    string    `json:"public_key_x"`
-	PublicKeyY    string    `json:"public_key_y"`
+	PublicKey     string    `json:"public_key"`
 }
 
 func main() {
@@ -102,43 +99,24 @@ func main() {
 	testData := chunks[int(chunkIndex)%leafCount]
 	fmt.Printf("Selected chunk index: %d\n", chunkIndex)
 
-	// 7. Compute message hash = H(data * randomness) and sign it
+	// 7. Compute message hash = H(data * randomness)
 	msg := utils.Hash(testData, randomness)
 	fmt.Printf("Message hash: 0x%x\n", msg.Bytes())
 
-	// 8. Generate EdDSA key pair and sign the message
-	signer, err := utils.GenerateSigner()
-	if err != nil {
-		log.Fatal(err)
-	}
+	// 8. Use a deterministic secret key and derive public key = H(secretKey)
+	secretKey := new(big.Int).SetUint64(12345)
+	var skFr fr.Element
+	skFr.SetBigInt(secretKey)
+	secretKey = new(big.Int)
+	skFr.BigInt(secretKey)
 
-	publicKey := signer.Public()
-	sig, err := utils.Sign(msg.Bytes(), signer)
-	if err != nil {
-		log.Fatal(err)
-	}
+	publicKey := utils.DerivePublicKey(secretKey)
+	fmt.Printf("Secret key: 0x%064x\n", secretKey)
+	fmt.Printf("Public key (H(sk)): 0x%064x\n", publicKey)
 
-	// 9. Commitment = signature R.X (nonce point X coordinate)
-	commitment, err := utils.SignatureRX(sig)
-	if err != nil {
-		log.Fatal("Failed to extract signature R.X:", err)
-	}
-	fmt.Printf("Commitment (sig R.X): 0x%x\n", commitment.Bytes())
-
-	// Extract X and Y from the public key using gnark-crypto's native eddsa type
-	pkBytes := publicKey.Bytes()
-	var typedPK eddsa.PublicKey
-	_, err = typedPK.SetBytes(pkBytes)
-	if err != nil {
-		log.Fatal("Failed to parse public key:", err)
-	}
-	pubKeyX := new(big.Int)
-	pubKeyY := new(big.Int)
-	typedPK.A.X.BigInt(pubKeyX)
-	typedPK.A.Y.BigInt(pubKeyY)
-
-	fmt.Printf("Public Key X: 0x%064x\n", pubKeyX)
-	fmt.Printf("Public Key Y: 0x%064x\n", pubKeyY)
+	// 9. VRF commitment = H(secretKey, msg, randomness, publicKey)
+	commitment := utils.DeriveCommitment(secretKey, msg, randomness, publicKey)
+	fmt.Printf("Commitment: 0x%064x\n", commitment)
 
 	// 10. Prepare Merkle proof
 	merkleProof, directions, err := merkleTree.GetMerkleProof(int(chunkIndex))
@@ -167,11 +145,11 @@ func main() {
 
 	// 11. Build witness
 	assignment := circuits.PoICircuit{}
+	assignment.SecretKey = secretKey
 	assignment.Bytes = utils.Bytes2Field(testData)
 	assignment.Commitment = commitment
 	assignment.Randomness = randomness
-	assignment.PublicKey.Assign(tedwards.BN254, pkBytes)
-	assignment.Signature.Assign(tedwards.BN254, sig)
+	assignment.PublicKey = publicKey
 	assignment.RootHash = merkleTree.GetRoot()
 	assignment.MerkleProof.RootHash = merkleTree.GetRoot()
 	assignment.MerkleProof.LeafValue = merkleTree.Leaves[chunkIndex].Hash
@@ -231,8 +209,7 @@ func main() {
 		Randomness: fmt.Sprintf("0x%064x", randomness),
 		RootHash:   fmt.Sprintf("0x%064x", merkleTree.GetRoot()),
 		Commitment: fmt.Sprintf("0x%064x", commitment),
-		PublicKeyX: fmt.Sprintf("0x%064x", pubKeyX),
-		PublicKeyY: fmt.Sprintf("0x%064x", pubKeyY),
+		PublicKey:  fmt.Sprintf("0x%064x", publicKey),
 	}
 	for i := 0; i < 8; i++ {
 		fixture.SolidityProof[i] = fmt.Sprintf("0x%064x", solidityProof[i])
@@ -249,8 +226,7 @@ func main() {
 	fmt.Printf("    uint256 constant ZK_RANDOMNESS = %s;\n", fixture.Randomness)
 	fmt.Printf("    uint256 constant ZK_FILE_ROOT = %s;\n", fixture.RootHash)
 	fmt.Printf("    bytes32 constant ZK_COMMITMENT = bytes32(%s);\n", fixture.Commitment)
-	fmt.Printf("    uint256 constant ZK_PUB_KEY_X = %s;\n", fixture.PublicKeyX)
-	fmt.Printf("    uint256 constant ZK_PUB_KEY_Y = %s;\n", fixture.PublicKeyY)
+	fmt.Printf("    uint256 constant ZK_PUB_KEY = %s;\n", fixture.PublicKey)
 	fmt.Println()
 	fmt.Printf("    // Proof (uint256[8])\n")
 	for i := 0; i < 8; i++ {
@@ -270,7 +246,7 @@ func main() {
 
 	// Public witness info
 	fmt.Println("\n=== PUBLIC WITNESS ORDER ===")
-	fmt.Println("In gnark circuit (= Solidity order): [commitment, randomness, publicKey.A.X, publicKey.A.Y, rootHash]")
+	fmt.Println("In gnark circuit (= Solidity order): [commitment, randomness, publicKey, rootHash]")
 	var pubWitBuf bytes.Buffer
 	_, err = publicWitness.WriteTo(&pubWitBuf)
 	if err != nil {
@@ -278,13 +254,12 @@ func main() {
 	}
 	fmt.Printf("Public witness size: %d bytes\n", pubWitBuf.Len())
 
-	// gnark orders: commitment(0), randomness(1), pubkey.A.X(2), pubkey.A.Y(3), rootHash(4)
-	// gnark's ExportSolidity maps gnark indices [0..4] to Solidity indices in the same order
+	// gnark orders: commitment(0), randomness(1), publicKey(2), rootHash(3)
+	// gnark's ExportSolidity maps gnark indices [0..3] to Solidity indices in the same order
 	fmt.Println("\ngnark public input order (from circuit struct tags):")
 	fmt.Println("  [0] commitment")
 	fmt.Println("  [1] randomness")
-	fmt.Println("  [2] publicKey.A.X")
-	fmt.Println("  [3] publicKey.A.Y")
-	fmt.Println("  [4] rootHash")
+	fmt.Println("  [2] publicKey")
+	fmt.Println("  [3] rootHash")
 	fmt.Println("\nMake sure Market.sol's publicInputs array matches this order!")
 }

@@ -11,7 +11,6 @@ import (
 	"github.com/MuriData/muri-zkproof/config"
 	"github.com/MuriData/muri-zkproof/utils"
 	"github.com/consensys/gnark-crypto/ecc"
-	tedwards "github.com/consensys/gnark-crypto/ecc/twistededwards"
 	"github.com/consensys/gnark/backend/groth16"
 	"github.com/consensys/gnark/frontend"
 	"github.com/consensys/gnark/frontend/cs/r1cs"
@@ -146,30 +145,23 @@ func main() {
 
 	fmt.Printf("Proof depth (levels): %d\n", len(merkleProof))
 
-	// Compute message = H(data * randomness) for EdDSA signing
+	// Compute message = H(data * randomness)
 	msg := utils.Hash(testData, randomness)
 	fmt.Printf("Poseidon2 message hash: 0x%x\n", msg.Bytes())
 
-	signer, err := utils.GenerateSigner()
+	// Generate secret key and derive public key = H(secretKey)
+	secretKey, err := utils.GenerateSecretKey()
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	publicKey := signer.Public()
-	fmt.Printf("\nPublic key (hex): 0x%x\n", publicKey.Bytes())
+	publicKey := utils.DerivePublicKey(secretKey)
+	fmt.Printf("\nSecret key: 0x%x\n", secretKey.Bytes())
+	fmt.Printf("Public key (H(sk)): 0x%x\n", publicKey.Bytes())
 
-	signature, err := utils.Sign(msg.Bytes(), signer)
-	if err != nil {
-		log.Fatal(err)
-	}
-	fmt.Printf("Signature (hex): 0x%x\n", signature)
-
-	// Commitment = R.X from the signature (used as next randomness)
-	commitment, err := utils.SignatureRX(signature)
-	if err != nil {
-		log.Fatal(err)
-	}
-	fmt.Printf("Commitment (sig R.X): 0x%x\n", commitment.Bytes())
+	// VRF commitment = H(secretKey, msg, randomness, publicKey)
+	commitment := utils.DeriveCommitment(secretKey, msg, randomness, publicKey)
+	fmt.Printf("Commitment: 0x%x\n", commitment.Bytes())
 
 	// Prepare Merkle proof data for the circuit
 	fmt.Println("\n=== Preparing Circuit Assignment ===")
@@ -197,11 +189,11 @@ func main() {
 	fmt.Printf("Merkle tree leaf hash: 0x%x\n", merkleTree.Leaves[chunkIndex].Hash.Bytes())
 
 	assignment := circuits.PoICircuit{}
+	assignment.SecretKey = secretKey
 	assignment.Bytes = utils.Bytes2Field(testData)
 	assignment.Commitment = commitment
 	assignment.Randomness = randomness
-	assignment.PublicKey.Assign(tedwards.BN254, publicKey.Bytes())
-	assignment.Signature.Assign(tedwards.BN254, signature)
+	assignment.PublicKey = publicKey
 	assignment.RootHash = merkleTree.GetRoot()
 
 	// Assign Merkle proof data

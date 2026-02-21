@@ -2,24 +2,21 @@ package circuits
 
 import (
 	"github.com/MuriData/muri-zkproof/config"
-	tedwards "github.com/consensys/gnark-crypto/ecc/twistededwards"
 	"github.com/consensys/gnark/frontend"
-	"github.com/consensys/gnark/std/algebra/native/twistededwards"
 	"github.com/consensys/gnark/std/hash"
 	"github.com/consensys/gnark/std/permutation/poseidon2"
-	"github.com/consensys/gnark/std/signature/eddsa"
 )
 
 type PoICircuit struct {
 	// Publics
 	Commitment frontend.Variable `gnark:"commitment,public"`
 	Randomness frontend.Variable `gnark:"randomness,public"`
-	PublicKey  eddsa.PublicKey   `gnark:"publicKey,public"`
+	PublicKey  frontend.Variable `gnark:"publicKey,public"`
 	RootHash   frontend.Variable `gnark:"rootHash,public"`
 
 	// Privates
+	SecretKey   frontend.Variable                   `gnark:"secretKey"`
 	Bytes       [config.NumChunks]frontend.Variable `gnark:"bytes"`
-	Signature   eddsa.Signature                     `gnark:"signature"`
 	MerkleProof MerkleProofCircuit                  `gnark:"merkleProof"`
 }
 
@@ -28,35 +25,41 @@ func (circuit *PoICircuit) Define(api frontend.API) error {
 	if err != nil {
 		return err
 	}
-	hasher := hash.NewMerkleDamgardHasher(api, p, 0)
 
-	// 1. Message: Compute msg = H(Bytes * Randomness).
-	// The hash binds the private data to the public randomness.
+	// 1. Key ownership: publicKey == H(secretKey).
+	//    The on-chain registered public key is the hash of the secret key.
+	keyHasher := hash.NewMerkleDamgardHasher(api, p, 0)
+	keyHasher.Write(circuit.SecretKey)
+	derivedPubKey := keyHasher.Sum()
+	keyHasher.Reset()
+
+	api.AssertIsEqual(circuit.PublicKey, derivedPubKey)
+
+	// 2. Message: msg = H(Bytes * Randomness).
+	//    Binds the private data to the public randomness.
+	msgHasher := hash.NewMerkleDamgardHasher(api, p, 0)
 	var preImage [config.NumChunks]frontend.Variable
 	for i := 0; i < config.NumChunks; i++ {
 		preImage[i] = api.Mul(circuit.Bytes[i], circuit.Randomness)
 	}
-	hasher.Write(preImage[:]...)
-	msg := hasher.Sum()
-	hasher.Reset()
+	msgHasher.Write(preImage[:]...)
+	msg := msgHasher.Sum()
+	msgHasher.Reset()
 
-	// 2. Signature: Verify the EdDSA signature over msg.
-	curve, err := twistededwards.NewEdCurve(api, tedwards.BN254)
-	if err != nil {
-		return err
-	}
-	err = eddsa.Verify(curve, circuit.Signature, msg, circuit.PublicKey, hasher)
+	// 3. VRF commitment: commitment = H(secretKey, msg, randomness, publicKey).
+	//    Deterministic and uniquely bound to the secret key — prover cannot bias
+	//    the output without using a different key, which fails step 1.
+	vrfHasher := hash.NewMerkleDamgardHasher(api, p, 0)
+	vrfHasher.Write(circuit.SecretKey)
+	vrfHasher.Write(msg)
+	vrfHasher.Write(circuit.Randomness)
+	vrfHasher.Write(circuit.PublicKey)
+	derivedCommitment := vrfHasher.Sum()
+	vrfHasher.Reset()
 
-	// 3. Commitment: The public commitment equals the signature's R.X (nonce point).
-	// R.X is deterministic (derived from private key + msg) and unpredictable
-	// without the private key, making it suitable as the next randomness.
-	api.AssertIsEqual(circuit.Commitment, circuit.Signature.R.X)
-	if err != nil {
-		return err
-	}
-	hasher.Reset()
+	api.AssertIsEqual(circuit.Commitment, derivedCommitment)
 
-	// 3. Deterministic Leaf Selection: Generate a direction bit list from randomness
+	// 4. Deterministic Leaf Selection: Generate a direction bit list from randomness
 	//    and ensure MerkleProof directions align with this list for all valid levels.
 	//    We only need the first MaxTreeDepth bits to navigate the Merkle path, but we
 	//    must *not* constrain the higher bits of `Randomness` to zero. Therefore we
@@ -97,12 +100,13 @@ func (circuit *PoICircuit) Define(api frontend.API) error {
 		prevActive = api.Mul(prevActive, api.Sub(1, siblingIsZero))
 	}
 
-	// 4. Merkle Proof: Prove the selected data chunk (Bytes) exists at the
+	// 5. Merkle Proof: Prove the selected data chunk (Bytes) exists at the
 	//    proven LeafIndex within the committed Merkle tree (RootHash).
 	// a) Compute the leaf hash from the raw data chunk.
-	hasher.Write(circuit.Bytes[:]...)
-	leafHash := hasher.Sum()
-	hasher.Reset()
+	leafHasher := hash.NewMerkleDamgardHasher(api, p, 0)
+	leafHasher.Write(circuit.Bytes[:]...)
+	leafHash := leafHasher.Sum()
+	leafHasher.Reset()
 
 	// b) Link the computed leaf hash and public root hash to the sub-circuit.
 	api.AssertIsEqual(circuit.MerkleProof.RootHash, circuit.RootHash)
