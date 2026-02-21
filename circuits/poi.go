@@ -85,6 +85,13 @@ func (circuit *PoICircuit) Define(api frontend.API) error {
 		api.AssertIsEqual(api.Mul(diff, isActive), 0)
 	}
 
+	// --- Minimum proof depth ---
+	// Reject 0-depth proofs where all siblings are zero. With 0-depth the
+	// Merkle sub-circuit only checks leafHash == rootHash, letting a prover
+	// bypass the tree structure entirely. Requiring the first sibling to be
+	// non-zero ensures at least one hashing level (depth >= 1, i.e. >= 2 leaves).
+	api.AssertIsEqual(api.IsZero(circuit.MerkleProof.ProofPath[0]), 0)
+
 	// --- Proof length monotonicity ---
 	// Enforce that once a zero sibling hash is encountered, all subsequent
 	// levels must also have a zero sibling. This guarantees that the proof

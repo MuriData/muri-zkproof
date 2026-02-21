@@ -61,8 +61,9 @@ func main() {
 	}
 	f.Close()
 
-	// 3. Create a small deterministic test file (16KB, single chunk)
-	testFileData := make([]byte, config.FileSize)
+	// 3. Create a small deterministic test file (32KB, two chunks).
+	//    Minimum two chunks because the circuit requires proof depth >= 1.
+	testFileData := make([]byte, 2*config.FileSize)
 	for i := range testFileData {
 		testFileData[i] = byte(i % 256)
 	}
