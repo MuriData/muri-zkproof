@@ -37,6 +37,9 @@ func (circuit *PoICircuit) Define(api frontend.API) error {
 
 	// 2. Message: msg = H(Bytes * Randomness).
 	//    Binds the private data to the public randomness.
+	//    Randomness must be non-zero; otherwise Bytes * 0 = 0 for all chunks
+	//    and the message hash becomes constant, breaking data binding.
+	api.AssertIsEqual(api.IsZero(circuit.Randomness), 0)
 	msgHasher := hash.NewMerkleDamgardHasher(api, p, 0)
 	var preImage [config.NumChunks]frontend.Variable
 	for i := 0; i < config.NumChunks; i++ {
