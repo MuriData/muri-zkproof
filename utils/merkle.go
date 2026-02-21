@@ -6,6 +6,7 @@ import (
 	"math/big"
 
 	"github.com/MuriData/muri-zkproof/config"
+	"github.com/consensys/gnark-crypto/ecc/bn254/fr"
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr/poseidon2"
 )
 
@@ -78,17 +79,21 @@ func hashChunk(chunk []byte) *big.Int {
 	return Hash(chunk, randomness)
 }
 
-// hashNodes hashes two node hashes together to create parent hash
+// hashNodes hashes two node hashes together to create parent hash.
+// Inputs are converted to canonical 32-byte fr.Element encoding so that
+// a zero value writes 32 zero bytes (matching the circuit) instead of
+// the empty slice returned by big.Int.Bytes().
 func hashNodes(left, right *big.Int) *big.Int {
 	h := poseidon2.NewMerkleDamgardHasher()
 
-	// Write left hash bytes
-	leftBytes := left.Bytes()
-	h.Write(leftBytes)
+	var lFr, rFr fr.Element
+	lFr.SetBigInt(left)
+	rFr.SetBigInt(right)
 
-	// Write right hash bytes
-	rightBytes := right.Bytes()
-	h.Write(rightBytes)
+	lBytes := lFr.Bytes()
+	rBytes := rFr.Bytes()
+	h.Write(lBytes[:])
+	h.Write(rBytes[:])
 
 	return new(big.Int).SetBytes(h.Sum(nil))
 }
