@@ -69,11 +69,17 @@ func Field2Bytes(elements []frontend.Variable, originalSize int) []byte {
 			_ = value.UnmarshalText([]byte(fmt.Sprintf("%v", v)))
 		}
 
-		// Zero the buffer then copy the value bytes at the end (big-endian)
+		// Zero the buffer then copy the value bytes at the end (big-endian).
+		// If the value exceeds ElementSize bytes (e.g. a full 32-byte field
+		// element), take only the least-significant ElementSize bytes to
+		// avoid a negative slice index panic.
 		for i := range tmp {
 			tmp[i] = 0
 		}
 		valueBytes := value.Bytes()
+		if len(valueBytes) > config.ElementSize {
+			valueBytes = valueBytes[len(valueBytes)-config.ElementSize:]
+		}
 		copy(tmp[config.ElementSize-len(valueBytes):], valueBytes)
 
 		result = append(result, tmp...)
