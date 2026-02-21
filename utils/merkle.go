@@ -104,23 +104,14 @@ func GenerateMerkleTree(chunks [][]byte) *MerkleTree {
 		chunks = [][]byte{make([]byte, config.FileSize)}
 	}
 
-	// Pad to the next power-of-two by repeating existing chunks.
+	// Pad to at least two leaves and then to the next power-of-two by
+	// repeating existing chunks.
 	chunks = padToPowerOfTwo(chunks)
 
 	// Create leaf nodes by hashing each chunk
 	leaves := make([]*MerkleNode, len(chunks))
 	for i, chunk := range chunks {
 		leaves[i] = NewMerkleNode(hashChunk(chunk), nil, nil)
-	}
-
-	// Degenerate case: only one chunk
-	if len(leaves) == 1 {
-		return &MerkleTree{
-			Root:       leaves[0],
-			Leaves:     leaves,
-			FileSize:   int64(len(chunks[0])), // Approximate from first chunk
-			ChunkCount: len(chunks),
-		}
 	}
 
 	// Build the tree bottom-up
@@ -294,18 +285,22 @@ func printNode(node *MerkleNode, prefix string, isLast bool, buf *bytes.Buffer) 
 	}
 }
 
-// padToPowerOfTwo duplicates existing chunks until the slice length is the next
-// power of two. This guarantees every leaf position corresponds to real data.
+// padToPowerOfTwo duplicates existing chunks until the slice length is at least
+// two and then the next power of two. The minimum-two rule guarantees proof
+// depth >= 1, so singleton files remain provable without allowing 0-depth paths.
 func padToPowerOfTwo(chunks [][]byte) [][]byte {
 	n := len(chunks)
 	if n == 0 {
 		return chunks
 	}
 
-	// Compute next power of two >= n
+	// Compute next power of two >= n.
 	nextPow := 1
 	for nextPow < n {
 		nextPow <<= 1
+	}
+	if nextPow < 2 {
+		nextPow = 2
 	}
 
 	// Duplicate chunks in round-robin fashion until we reach nextPow length.
