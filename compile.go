@@ -24,16 +24,27 @@ import (
 const ceremonyDir = "ceremony"
 
 func main() {
-	if len(os.Args) < 2 || os.Args[1] != "ceremony" {
-		devSetup()
-		return
-	}
-
-	if len(os.Args) < 3 {
+	if len(os.Args) < 2 {
 		printUsage()
 		os.Exit(1)
 	}
 
+	switch os.Args[1] {
+	case "dev":
+		devSetup()
+	case "ceremony":
+		if len(os.Args) < 3 {
+			printUsage()
+			os.Exit(1)
+		}
+		handleCeremony()
+	default:
+		printUsage()
+		os.Exit(1)
+	}
+}
+
+func handleCeremony() {
 	switch os.Args[2] {
 	case "p1-init":
 		ceremonyP1Init()
@@ -61,7 +72,7 @@ func main() {
 
 func printUsage() {
 	fmt.Println(`Usage:
-  go run compile.go                             Dev mode (single-party setup, insecure)
+  go run compile.go dev                         Dev mode (single-party setup, NOT for production)
 
   go run compile.go ceremony p1-init            Initialize Phase 1 (Powers of Tau)
   go run compile.go ceremony p1-contribute      Add a Phase 1 contribution
@@ -172,6 +183,11 @@ func nextContribPath(prefix string) string {
 // ─── Dev mode ───────────────────────────────────────────────────────────────
 
 func devSetup() {
+	fmt.Println("================================================================")
+	fmt.Println("  WARNING: Single-party setup (1-of-1 trust assumption)")
+	fmt.Println("  DO NOT use these keys in production.")
+	fmt.Println("  For production, run: go run compile.go ceremony --help")
+	fmt.Println("================================================================")
 	ccs := compileCircuit()
 	pk, vk, err := groth16.Setup(ccs)
 	if err != nil {

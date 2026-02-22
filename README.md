@@ -31,7 +31,7 @@ The end result is a statement of the form: "Given this commitment, randomness, M
 
 ## Relationship to `muri-contracts`
 The Solidity verifier exported from this project (`poi_verifier.sol`) is linked into `muri-contracts` via the `muri-artifacts` git submodule. When you regenerate the verifier or keys:
-1. Run `go run compile.go` in this repository to rebuild the Groth16 setup.
+1. Run `go run compile.go dev` in this repository to rebuild the Groth16 setup (dev only; use the MPC ceremony for production).
 2. Copy `poi_verifier.sol`, `poi_prover.key`, and `poi_verifier.key` into `muri-artifacts/` and commit (keys are Git LFS tracked).
 3. Update the submodule pin: `cd muri-contracts && git submodule update --remote lib/muri-artifacts`.
 4. Run `go run export_proof.go` to regenerate `proof_fixture.json` for Solidity tests.
@@ -41,7 +41,7 @@ The Solidity verifier exported from this project (`poi_verifier.sol`) is linked 
 - `circuits/` – gnark circuits for the PoI proof (`poi.go`) and the reusable Merkle proof subcircuit (`merkle.go`).
 - `config/` – global circuit parameters (chunk sizing, Merkle depth).
 - `utils/` – reusable Go helpers for Poseidon2 hashing, key derivation, chunking files, Merkle tree construction, and witness preparation.
-- `compile.go` – Groth16 setup tool. Dev mode (single-party) and MPC ceremony mode (multi-party trusted setup).
+- `compile.go` – Groth16 setup tool. Requires a subcommand: `dev` (single-party) or `ceremony` (multi-party trusted setup).
 - `test.go` – end-to-end flow: random data → chunk → Merkle tree → generate & verify proof.
 - `export_proof.go` – generates deterministic proof fixtures for Solidity tests.
 - `poi_prover.key`, `poi_verifier.key`, `poi_verifier.sol` – pre-generated setup artifacts (replace with your own for production via MPC ceremony).
@@ -77,7 +77,7 @@ Outputs `proof_fixture.json` with Solidity-formatted proof points and public inp
 
 ### Dev mode (single-party, insecure)
 ```bash
-go run compile.go
+go run compile.go dev
 ```
 
 ### MPC ceremony (production)
