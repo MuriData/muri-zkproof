@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/big"
 
+	"github.com/MuriData/muri-zkproof/pkg/crypto"
 	"github.com/MuriData/muri-zkproof/pkg/merkle"
 	"github.com/MuriData/muri-zkproof/pkg/setup"
 	"github.com/consensys/gnark-crypto/ecc"
@@ -63,12 +64,13 @@ func ExportProofFixture(keysDir string) ([]byte, error) {
 	secretKey = new(big.Int)
 	skFr.BigInt(secretKey)
 
-	// 5. Build Merkle tree and prepare the full witness
-	merkleTree := merkle.GenerateMerkleTree(chunks, FileSize, HashChunk)
-	fmt.Printf("Merkle root: 0x%x\n", merkleTree.GetRoot().Bytes())
-	fmt.Printf("Leaves: %d, Height: %d\n", merkleTree.GetLeafCount(), merkleTree.GetHeight())
+	// 5. Build sparse Merkle tree and prepare the full witness
+	zeroLeaf := crypto.ComputeZeroLeafHash(ElementSize, NumChunks)
+	smt := merkle.GenerateSparseMerkleTree(chunks, MaxTreeDepth, HashChunk, zeroLeaf)
+	fmt.Printf("Merkle root: 0x%x\n", smt.Root.Bytes())
+	fmt.Printf("Leaves: %d, Depth: %d\n", smt.NumLeaves, smt.Depth)
 
-	result, err := PrepareWitness(secretKey, randomness, chunks, merkleTree)
+	result, err := PrepareWitness(secretKey, randomness, chunks, smt)
 	if err != nil {
 		return nil, fmt.Errorf("prepare witness: %w", err)
 	}
@@ -128,7 +130,7 @@ func ExportProofFixture(keysDir string) ([]byte, error) {
 
 	fixture := ProofFixture{
 		Randomness: fmt.Sprintf("0x%064x", randomness),
-		RootHash:   fmt.Sprintf("0x%064x", merkleTree.GetRoot()),
+		RootHash:   fmt.Sprintf("0x%064x", smt.Root),
 		Commitment: fmt.Sprintf("0x%064x", result.Commitment),
 		PublicKey:  fmt.Sprintf("0x%064x", result.PublicKey),
 	}

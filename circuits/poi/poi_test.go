@@ -12,11 +12,47 @@ import (
 	"github.com/MuriData/muri-zkproof/pkg/setup"
 	"github.com/consensys/gnark-crypto/ecc"
 	"github.com/consensys/gnark/backend/groth16"
+	"github.com/consensys/gnark/constraint"
 	"github.com/consensys/gnark/frontend"
 )
 
+// buildSMT is a test helper that splits data into chunks and builds a
+// sparse Merkle tree with domain-separated leaf hashing.
+func buildSMT(data []byte) (*merkle.SparseMerkleTree, [][]byte) {
+	chunks := merkle.SplitIntoChunks(data, poi.FileSize)
+	zeroLeaf := crypto.ComputeZeroLeafHash(poi.ElementSize, poi.NumChunks)
+	smt := merkle.GenerateSparseMerkleTree(chunks, poi.MaxTreeDepth, poi.HashChunk, zeroLeaf)
+	return smt, chunks
+}
+
+// proveAndVerify compiles, sets up, proves, and verifies a PoI circuit.
+// Returns an error on any step failure.
+func proveAndVerify(t *testing.T, ccs constraint.ConstraintSystem, pk groth16.ProvingKey, vk groth16.VerifyingKey, assignment *poi.PoICircuit) {
+	t.Helper()
+
+	witness, err := frontend.NewWitness(assignment, ecc.BN254.ScalarField())
+	if err != nil {
+		t.Fatalf("create witness: %v", err)
+	}
+
+	publicWitness, err := witness.Public()
+	if err != nil {
+		t.Fatalf("extract public witness: %v", err)
+	}
+
+	proof, err := groth16.Prove(ccs, pk, witness)
+	if err != nil {
+		t.Fatalf("prove: %v", err)
+	}
+
+	err = groth16.Verify(proof, vk, publicWitness)
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+}
+
 // TestPoICircuitEndToEnd compiles the circuit, performs a dev setup,
-// generates random data, builds a Merkle tree, prepares a witness,
+// generates random data, builds a sparse Merkle tree, prepares a witness,
 // generates a proof, and verifies it.
 func TestPoICircuitEndToEnd(t *testing.T) {
 	// 1. Compile
@@ -37,8 +73,9 @@ func TestPoICircuitEndToEnd(t *testing.T) {
 	if _, err := rand.Read(wholeFileData); err != nil {
 		t.Fatalf("generate random data: %v", err)
 	}
-	chunks := merkle.SplitIntoChunks(wholeFileData, poi.FileSize)
-	t.Logf("Generated %d bytes of random data (%d chunks)", testFileSize, len(chunks))
+	smt, chunks := buildSMT(wholeFileData)
+	t.Logf("Generated %d bytes of random data (%d chunks)", testFileSize, smt.NumLeaves)
+	t.Logf("Merkle root: 0x%x", smt.Root.Bytes())
 
 	// 4. Generate randomness and secret key
 	randomness, err := rand.Int(rand.Reader, ecc.BN254.ScalarField())
@@ -51,46 +88,20 @@ func TestPoICircuitEndToEnd(t *testing.T) {
 		t.Fatalf("generate secret key: %v", err)
 	}
 
-	// 5. Build Merkle tree and prepare witness
-	merkleTree := merkle.GenerateMerkleTree(chunks, poi.FileSize, poi.HashChunk)
-	t.Logf("Merkle root: 0x%x", merkleTree.GetRoot().Bytes())
-	t.Logf("Leaves: %d, Height: %d", merkleTree.GetLeafCount(), merkleTree.GetHeight())
-
-	result, err := poi.PrepareWitness(secretKey, randomness, chunks, merkleTree)
+	// 5. Prepare witness
+	result, err := poi.PrepareWitness(secretKey, randomness, chunks, smt)
 	if err != nil {
 		t.Fatalf("prepare witness: %v", err)
 	}
 	t.Logf("Selected chunk indices: %v", result.ChunkIndices)
 
-	// 6. Create witness and generate proof
-	witness, err := frontend.NewWitness(&result.Assignment, ecc.BN254.ScalarField())
-	if err != nil {
-		t.Fatalf("create witness: %v", err)
-	}
-
-	publicWitness, err := witness.Public()
-	if err != nil {
-		t.Fatalf("extract public witness: %v", err)
-	}
-
-	proof, err := groth16.Prove(ccs, pk, witness)
-	if err != nil {
-		t.Fatalf("prove: %v", err)
-	}
-
-	// 7. Verify proof
-	err = groth16.Verify(proof, vk, publicWitness)
-	if err != nil {
-		t.Fatalf("verify: %v", err)
-	}
-
+	// 6. Prove and verify
+	proveAndVerify(t, ccs, pk, vk, &result.Assignment)
 	t.Log("ZK proof verified successfully!")
 }
 
 // TestPoIMultipleFileSizes verifies the circuit works for various file sizes.
-// For small files (< 8 leaves), multiple openings hit the same leaf via wrapping.
 func TestPoIMultipleFileSizes(t *testing.T) {
-	// Compile and setup once — reuse for all sub-tests.
 	ccs, err := setup.CompileCircuit(&poi.PoICircuit{})
 	if err != nil {
 		t.Fatalf("compile circuit: %v", err)
@@ -104,6 +115,7 @@ func TestPoIMultipleFileSizes(t *testing.T) {
 		name       string
 		chunkCount int
 	}{
+		{"1_chunk_16KB", 1},
 		{"2_chunks_32KB", 2},
 		{"4_chunks_64KB", 4},
 		{"8_chunks_128KB", 8},
@@ -117,8 +129,8 @@ func TestPoIMultipleFileSizes(t *testing.T) {
 			if _, err := rand.Read(wholeFileData); err != nil {
 				t.Fatalf("generate random data: %v", err)
 			}
-			chunks := merkle.SplitIntoChunks(wholeFileData, poi.FileSize)
-			t.Logf("Chunks: %d", len(chunks))
+			smt, chunks := buildSMT(wholeFileData)
+			t.Logf("Chunks: %d, NumLeaves: %d", len(chunks), smt.NumLeaves)
 
 			randomness, err := rand.Int(rand.Reader, ecc.BN254.ScalarField())
 			if err != nil {
@@ -129,34 +141,13 @@ func TestPoIMultipleFileSizes(t *testing.T) {
 				t.Fatalf("generate secret key: %v", err)
 			}
 
-			merkleTree := merkle.GenerateMerkleTree(chunks, poi.FileSize, poi.HashChunk)
-			t.Logf("Leaves: %d, Height: %d", merkleTree.GetLeafCount(), merkleTree.GetHeight())
-
-			result, err := poi.PrepareWitness(secretKey, randomness, chunks, merkleTree)
+			result, err := poi.PrepareWitness(secretKey, randomness, chunks, smt)
 			if err != nil {
 				t.Fatalf("prepare witness: %v", err)
 			}
 			t.Logf("Chunk indices: %v", result.ChunkIndices)
 
-			witness, err := frontend.NewWitness(&result.Assignment, ecc.BN254.ScalarField())
-			if err != nil {
-				t.Fatalf("create witness: %v", err)
-			}
-			publicWitness, err := witness.Public()
-			if err != nil {
-				t.Fatalf("extract public witness: %v", err)
-			}
-
-			proof, err := groth16.Prove(ccs, pk, witness)
-			if err != nil {
-				t.Fatalf("prove: %v", err)
-			}
-
-			err = groth16.Verify(proof, vk, publicWitness)
-			if err != nil {
-				t.Fatalf("verify: %v", err)
-			}
-
+			proveAndVerify(t, ccs, pk, vk, &result.Assignment)
 			t.Log("Proof verified OK")
 		})
 	}

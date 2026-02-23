@@ -307,3 +307,141 @@ func padToPowerOfTwo(chunks [][]byte) [][]byte {
 	}
 	return chunks
 }
+
+// ---------------------------------------------------------------------------
+// Sparse Merkle Tree (fixed-depth, for PoI circuit with domain separation)
+// ---------------------------------------------------------------------------
+
+// SparseMerkleTree represents a fixed-depth Merkle tree where only real leaves
+// are stored. Missing (padding) positions use precomputed zero-subtree hashes.
+type SparseMerkleTree struct {
+	Root       *big.Int
+	Depth      int
+	NumLeaves  int               // actual number of real leaves
+	Levels     []map[int]*big.Int // levels[0] = leaves, levels[depth] has the root
+	ZeroHashes []*big.Int         // zeroHashes[i] = hash of an all-zero subtree at level i
+}
+
+// PrecomputeZeroHashes builds the zero-subtree hash chain:
+//
+//	zeroHashes[0] = zeroLeafHash
+//	zeroHashes[i] = HashNodes(zeroHashes[i-1], zeroHashes[i-1])
+//
+// The returned slice has length depth+1 (indices 0..depth).
+func PrecomputeZeroHashes(depth int, zeroLeafHash *big.Int) []*big.Int {
+	zh := make([]*big.Int, depth+1)
+	zh[0] = new(big.Int).Set(zeroLeafHash)
+	for i := 1; i <= depth; i++ {
+		zh[i] = HashNodes(zh[i-1], zh[i-1])
+	}
+	return zh
+}
+
+// GenerateSparseMerkleTree builds a fixed-depth sparse Merkle tree from
+// pre-split chunks. Real leaves occupy indices 0..len(chunks)-1; all other
+// positions use the precomputed zero-subtree hashes.
+//
+// hashLeaf hashes a single chunk to produce the leaf value.
+// zeroLeafHash is the domain-separated hash for padding leaves.
+func GenerateSparseMerkleTree(chunks [][]byte, depth int, hashLeaf HashFunc, zeroLeafHash *big.Int) *SparseMerkleTree {
+	numLeaves := len(chunks)
+	if numLeaves == 0 {
+		numLeaves = 0 // empty tree is valid (root = zeroHashes[depth])
+	}
+
+	zeroHashes := PrecomputeZeroHashes(depth, zeroLeafHash)
+
+	// Allocate levels: levels[0] = leaf level, ..., levels[depth] = root level.
+	levels := make([]map[int]*big.Int, depth+1)
+	for i := range levels {
+		levels[i] = make(map[int]*big.Int)
+	}
+
+	// Populate leaf level with real chunk hashes.
+	for i, chunk := range chunks {
+		levels[0][i] = hashLeaf(chunk)
+	}
+
+	// Build bottom-up.
+	for lvl := 0; lvl < depth; lvl++ {
+		// Collect all parent indices that have at least one real child.
+		parentIndices := make(map[int]bool)
+		for idx := range levels[lvl] {
+			parentIndices[idx/2] = true
+		}
+		for parentIdx := range parentIndices {
+			leftIdx := parentIdx * 2
+			rightIdx := parentIdx*2 + 1
+
+			left, ok := levels[lvl][leftIdx]
+			if !ok {
+				left = zeroHashes[lvl]
+			}
+			right, ok := levels[lvl][rightIdx]
+			if !ok {
+				right = zeroHashes[lvl]
+			}
+
+			levels[lvl+1][parentIdx] = HashNodes(left, right)
+		}
+	}
+
+	// Root is the single entry at levels[depth], or the zero hash if empty.
+	root, ok := levels[depth][0]
+	if !ok {
+		root = zeroHashes[depth]
+	}
+
+	return &SparseMerkleTree{
+		Root:       root,
+		Depth:      depth,
+		NumLeaves:  len(chunks),
+		Levels:     levels,
+		ZeroHashes: zeroHashes,
+	}
+}
+
+// GetProof returns a fixed-size Merkle proof for the leaf at the given index.
+// The proof has exactly smt.Depth elements. siblings[i] is the sibling hash at
+// level i, and directions[i] is the circuit-format direction:
+//
+//	0 = current node is the left child  (sibling on the right)
+//	1 = current node is the right child (sibling on the left)
+func (smt *SparseMerkleTree) GetProof(leafIndex int) ([]*big.Int, []int) {
+	siblings := make([]*big.Int, smt.Depth)
+	directions := make([]int, smt.Depth)
+
+	idx := leafIndex
+	for lvl := 0; lvl < smt.Depth; lvl++ {
+		var siblingIdx int
+		if idx%2 == 0 {
+			// Current is left child; sibling is right.
+			siblingIdx = idx + 1
+			directions[lvl] = 0
+		} else {
+			// Current is right child; sibling is left.
+			siblingIdx = idx - 1
+			directions[lvl] = 1
+		}
+
+		sib, ok := smt.Levels[lvl][siblingIdx]
+		if !ok {
+			sib = smt.ZeroHashes[lvl]
+		}
+		siblings[lvl] = sib
+
+		idx /= 2 // move to parent
+	}
+
+	return siblings, directions
+}
+
+// GetLeafHash returns the hash at the given leaf index, using the zero leaf
+// hash for positions beyond the real leaves.
+func (smt *SparseMerkleTree) GetLeafHash(leafIndex int) *big.Int {
+	h, ok := smt.Levels[0][leafIndex]
+	if !ok {
+		return smt.ZeroHashes[0]
+	}
+	return h
+}
