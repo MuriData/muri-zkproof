@@ -20,8 +20,8 @@
 # Go workspace file
 go.work
 
-# Generated Groth16 artifacts (live in muri-artifacts repo)
-poi_prover.key
-poi_verifier.key
-poi_verifier.sol
+# Generated ZK artifacts (live in muri-artifacts repo)
+*_prover.key
+*_verifier.key
+*_verifier.sol
 proof_fixture.json
