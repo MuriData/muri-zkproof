@@ -2,8 +2,12 @@ package merkle
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
+	"io"
 	"math/big"
+	"runtime"
+	"sync"
 
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr"
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr/poseidon2"
@@ -357,9 +361,35 @@ func GenerateSparseMerkleTree(chunks [][]byte, depth int, hashLeaf HashFunc, zer
 		levels[i] = make(map[int]*big.Int)
 	}
 
-	// Populate leaf level with real chunk hashes.
-	for i, chunk := range chunks {
-		levels[0][i] = hashLeaf(chunk)
+	// Populate leaf level with real chunk hashes (parallel).
+	leafHashes := make([]*big.Int, len(chunks))
+	numWorkers := runtime.NumCPU()
+	if numWorkers > len(chunks) {
+		numWorkers = len(chunks)
+	}
+	if numWorkers < 1 {
+		numWorkers = 1
+	}
+
+	var wg sync.WaitGroup
+	work := make(chan int, len(chunks))
+	for w := 0; w < numWorkers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range work {
+				leafHashes[i] = hashLeaf(chunks[i])
+			}
+		}()
+	}
+	for i := range chunks {
+		work <- i
+	}
+	close(work)
+	wg.Wait()
+
+	for i, h := range leafHashes {
+		levels[0][i] = h
 	}
 
 	// Build bottom-up.
@@ -444,4 +474,124 @@ func (smt *SparseMerkleTree) GetLeafHash(leafIndex int) *big.Int {
 		return smt.ZeroHashes[0]
 	}
 	return h
+}
+
+// ---------------------------------------------------------------------------
+// SMT Serialization (binary format for persistence)
+// ---------------------------------------------------------------------------
+//
+// Format:
+//   uint32(depth) | uint32(numLeaves)
+//   For each level 0..depth:
+//     uint32(count)
+//     For each entry:
+//       uint32(index) | [32]byte(hash as big-endian fr.Element)
+//
+// Zero hashes are NOT stored — they are recomputed from zeroLeafHash on load.
+
+// Save writes the sparse Merkle tree to w in a deterministic binary format.
+func (smt *SparseMerkleTree) Save(w io.Writer) error {
+	// Header: depth + numLeaves.
+	if err := binary.Write(w, binary.BigEndian, uint32(smt.Depth)); err != nil {
+		return fmt.Errorf("write depth: %w", err)
+	}
+	if err := binary.Write(w, binary.BigEndian, uint32(smt.NumLeaves)); err != nil {
+		return fmt.Errorf("write numLeaves: %w", err)
+	}
+
+	// Per-level entries.
+	for lvl := 0; lvl <= smt.Depth; lvl++ {
+		m := smt.Levels[lvl]
+		if err := binary.Write(w, binary.BigEndian, uint32(len(m))); err != nil {
+			return fmt.Errorf("write level %d count: %w", lvl, err)
+		}
+
+		// Collect and sort indices for deterministic output.
+		indices := make([]int, 0, len(m))
+		for idx := range m {
+			indices = append(indices, idx)
+		}
+		sortInts(indices)
+
+		for _, idx := range indices {
+			if err := binary.Write(w, binary.BigEndian, uint32(idx)); err != nil {
+				return fmt.Errorf("write level %d index %d: %w", lvl, idx, err)
+			}
+			var elem fr.Element
+			elem.SetBigInt(m[idx])
+			b := elem.Bytes() // canonical 32-byte big-endian
+			if _, err := w.Write(b[:]); err != nil {
+				return fmt.Errorf("write level %d hash %d: %w", lvl, idx, err)
+			}
+		}
+	}
+
+	return nil
+}
+
+// LoadSparseMerkleTree reads a sparse Merkle tree from r that was written by
+// Save. The zeroLeafHash is needed to recompute the zero-subtree hash chain.
+func LoadSparseMerkleTree(r io.Reader, zeroLeafHash *big.Int) (*SparseMerkleTree, error) {
+	var depth, numLeaves uint32
+	if err := binary.Read(r, binary.BigEndian, &depth); err != nil {
+		return nil, fmt.Errorf("read depth: %w", err)
+	}
+	if err := binary.Read(r, binary.BigEndian, &numLeaves); err != nil {
+		return nil, fmt.Errorf("read numLeaves: %w", err)
+	}
+
+	zeroHashes := PrecomputeZeroHashes(int(depth), zeroLeafHash)
+
+	levels := make([]map[int]*big.Int, depth+1)
+	for lvl := 0; lvl <= int(depth); lvl++ {
+		var count uint32
+		if err := binary.Read(r, binary.BigEndian, &count); err != nil {
+			return nil, fmt.Errorf("read level %d count: %w", lvl, err)
+		}
+
+		m := make(map[int]*big.Int, int(count))
+		var hashBuf [32]byte
+		for j := 0; j < int(count); j++ {
+			var idx uint32
+			if err := binary.Read(r, binary.BigEndian, &idx); err != nil {
+				return nil, fmt.Errorf("read level %d index: %w", lvl, err)
+			}
+			if _, err := io.ReadFull(r, hashBuf[:]); err != nil {
+				return nil, fmt.Errorf("read level %d hash: %w", lvl, err)
+			}
+			var elem fr.Element
+			elem.SetBytes(hashBuf[:])
+			m[int(idx)] = new(big.Int)
+			elem.BigInt(m[int(idx)])
+		}
+		levels[lvl] = m
+	}
+
+	// Root is the single entry at levels[depth], or the zero hash if empty.
+	root, ok := levels[depth][0]
+	if !ok {
+		root = zeroHashes[depth]
+	}
+
+	return &SparseMerkleTree{
+		Root:       root,
+		Depth:      int(depth),
+		NumLeaves:  int(numLeaves),
+		Levels:     levels,
+		ZeroHashes: zeroHashes,
+	}, nil
+}
+
+// sortInts sorts a slice of ints in ascending order (insertion sort,
+// suitable for the typically small per-level entry counts).
+func sortInts(s []int) {
+	for i := 1; i < len(s); i++ {
+		key := s[i]
+		j := i - 1
+		for j >= 0 && s[j] > key {
+			s[j+1] = s[j]
+			j--
+		}
+		s[j+1] = key
+	}
 }

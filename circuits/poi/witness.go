@@ -3,6 +3,7 @@ package poi
 import (
 	"fmt"
 	"math/big"
+	"sync"
 
 	"github.com/MuriData/muri-zkproof/pkg/crypto"
 	"github.com/MuriData/muri-zkproof/pkg/field"
@@ -52,51 +53,81 @@ func PrepareWitness(secretKey, randomness *big.Int, chunks [][]byte, smt *merkle
 
 	numLeavesBig := big.NewInt(int64(numLeaves))
 
+	// Per-opening results collected by parallel goroutines.
+	type openingResult struct {
+		chunkIndex  int
+		bytesArray  [NumChunks]frontend.Variable
+		quotient    *big.Int
+		leafIndex   *big.Int
+		merkleProof MerkleProofCircuit
+		leafHash    *big.Int
+	}
+	var results [OpeningsCount]openingResult
+
+	// The 8 openings are independent — compute them in parallel.
+	var wg sync.WaitGroup
 	for k := 0; k < OpeningsCount; k++ {
-		// Derive rawIndex from 20-bit window [k*MaxTreeDepth .. k*MaxTreeDepth+19].
-		// bits.FromBinary uses little-endian, so bit 0 is LSB.
-		bitOffset := k * MaxTreeDepth
-		var rawIndex int64
-		for i := 0; i < MaxTreeDepth; i++ {
-			bit := randomness.Bit(bitOffset + i)
-			rawIndex |= int64(bit) << i
-		}
+		wg.Add(1)
+		go func(k int) {
+			defer wg.Done()
 
-		// Modular reduction: leafIndex = rawIndex % numLeaves.
-		rawIndexBig := big.NewInt(rawIndex)
-		quotientBig := new(big.Int).Div(rawIndexBig, numLeavesBig)
-		leafIndexBig := new(big.Int).Mod(rawIndexBig, numLeavesBig)
-		leafIndex := int(leafIndexBig.Int64())
+			// Derive rawIndex from 20-bit window [k*MaxTreeDepth .. k*MaxTreeDepth+19].
+			bitOffset := k * MaxTreeDepth
+			var rawIndex int64
+			for i := 0; i < MaxTreeDepth; i++ {
+				bit := randomness.Bit(bitOffset + i)
+				rawIndex |= int64(bit) << i
+			}
 
-		chunkIndices[k] = leafIndex
-		chunkData := chunks[leafIndex]
+			// Modular reduction: leafIndex = rawIndex % numLeaves.
+			rawIndexBig := big.NewInt(rawIndex)
+			quotientBig := new(big.Int).Div(rawIndexBig, numLeavesBig)
+			leafIndexBig := new(big.Int).Mod(rawIndexBig, numLeavesBig)
+			leafIndex := int(leafIndexBig.Int64())
 
-		// Merkle proof for this opening from the SMT.
-		siblings, directions := smt.GetProof(leafIndex)
+			chunkData := chunks[leafIndex]
 
-		var proofPath [MaxTreeDepth]frontend.Variable
-		var proofDirections [MaxTreeDepth]frontend.Variable
-		for i := 0; i < MaxTreeDepth; i++ {
-			proofPath[i] = siblings[i]
-			proofDirections[i] = directions[i]
-		}
+			// Merkle proof for this opening from the SMT.
+			siblings, directions := smt.GetProof(leafIndex)
 
-		// Convert chunk bytes to field elements.
-		fieldSlice := field.Bytes2Field(chunkData, NumChunks, ElementSize)
-		var bytesArray [NumChunks]frontend.Variable
-		copy(bytesArray[:], fieldSlice)
+			var proofPath [MaxTreeDepth]frontend.Variable
+			var proofDirections [MaxTreeDepth]frontend.Variable
+			for i := 0; i < MaxTreeDepth; i++ {
+				proofPath[i] = siblings[i]
+				proofDirections[i] = directions[i]
+			}
 
-		assignment.Bytes[k] = bytesArray
-		assignment.Quotients[k] = quotientBig
-		assignment.LeafIndices[k] = leafIndexBig
-		assignment.MerkleProofs[k] = MerkleProofCircuit{
-			RootHash:   smt.Root,
-			LeafValue:  smt.GetLeafHash(leafIndex),
-			ProofPath:  proofPath,
-			Directions: proofDirections,
-		}
+			// Convert chunk bytes to field elements.
+			fieldSlice := field.Bytes2Field(chunkData, NumChunks, ElementSize)
+			var bytesArray [NumChunks]frontend.Variable
+			copy(bytesArray[:], fieldSlice)
 
-		leafHashes[k] = HashChunk(chunkData)
+			results[k] = openingResult{
+				chunkIndex: leafIndex,
+				bytesArray: bytesArray,
+				quotient:   quotientBig,
+				leafIndex:  leafIndexBig,
+				merkleProof: MerkleProofCircuit{
+					RootHash:   smt.Root,
+					LeafValue:  smt.GetLeafHash(leafIndex),
+					ProofPath:  proofPath,
+					Directions: proofDirections,
+				},
+				leafHash: HashChunk(chunkData),
+			}
+		}(k)
+	}
+	wg.Wait()
+
+	// Collect results into assignment.
+	for k := 0; k < OpeningsCount; k++ {
+		r := &results[k]
+		chunkIndices[k] = r.chunkIndex
+		leafHashes[k] = r.leafHash
+		assignment.Bytes[k] = r.bytesArray
+		assignment.Quotients[k] = r.quotient
+		assignment.LeafIndices[k] = r.leafIndex
+		assignment.MerkleProofs[k] = r.merkleProof
 	}
 
 	// Boundary proofs.
