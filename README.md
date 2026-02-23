@@ -12,23 +12,25 @@ Zero-knowledge proof circuits and tooling that power MuriData's decentralized st
 
 | Circuit | Package | Description |
 |---------|---------|-------------|
-| **PoI** (Proof of Integrity) | `circuits/poi` | Proves a Poseidon2 commitment matches a Merkle tree leaf selected deterministically from public randomness, with hash-based key ownership |
+| **PoI** (Proof of Integrity) | `circuits/poi` | Proves 8 parallel Merkle openings selected via bit-sliced randomness, with Poseidon2 aggregate commitment and hash-based key ownership |
 
 ## How it works (PoI circuit)
-1. **Chunking and hashing** – A prover splits user data into fixed 16 KiB blobs, then converts the target blob into field elements. Inside the circuit each element is multiplied by the public randomness and hashed with Poseidon2 to form a binding message: `msg = H(Bytes × Randomness)`.
-2. **Key ownership** – The prover's public key is derived as `publicKey = H(secretKey)` using Poseidon2. The circuit re-derives this hash and asserts equality with the public input, proving the prover knows the secret key registered on-chain.
-3. **VRF commitment** – The circuit computes `commitment = H(secretKey, msg, randomness, publicKey)`. This is deterministic and uniquely bound to the secret key — a prover cannot bias the output without using a different key, which would fail the key ownership check.
-4. **Deterministic leaf choice** – The public randomness is decomposed into bits; the circuit derives the leaf index from those bits so both prover and verifier agree on the unique Merkle leaf that must be proven. This prevents selective disclosure.
-5. **Merkle membership** – Using the supplied Merkle path and direction bits, the circuit replays the Poseidon2 hash chain and enforces that the selected leaf links back to the public Merkle root. The circuit enforces minimum proof depth of 1 (at least 2 leaves) and contiguous proof encoding (no active levels after padding).
-6. **Groth16 proof generation** – With the full witness (private bytes, secret key, Merkle path) the prover produces a Groth16 proof using `poi_prover.key`. On-chain, `poi_verifier.sol` checks the proof against the four public inputs `[commitment, randomness, publicKey, rootHash]`.
+1. **Multi-leaf opening** – Each proof opens **8 leaves** (`OpeningsCount = 8`) in parallel. Leaf indices are derived via bit-slicing: opening `k` uses randomness bits `[k*20 .. k*20+19]` to select its leaf. All 8 openings are always active — for small files, multiple openings naturally hit the same leaf via modular wrapping. This gives dramatically better detection probability for missing data while keeping the on-chain verification cost constant (Groth16 pairing check is O(1)).
+2. **Chunking and hashing** – A prover splits user data into fixed 16 KiB blobs, then converts each target blob into field elements. Inside the circuit each blob is hashed with Poseidon2 to produce a leaf hash: `leafHash[k] = H(Bytes[k][0..527])`.
+3. **Key ownership** – The prover's public key is derived as `publicKey = H(secretKey)` using Poseidon2. The circuit re-derives this hash and asserts equality with the public input, proving the prover knows the secret key registered on-chain.
+4. **Aggregate message** – The circuit computes `aggMsg = H(leafHash[0], ..., leafHash[7], randomness)`, binding all 8 leaf hashes to the public randomness in a single hash.
+5. **VRF commitment** – The circuit computes `commitment = H(secretKey, aggMsg, randomness, publicKey)`. This is deterministic and uniquely bound to the secret key — a prover cannot bias the output without using a different key, which would fail the key ownership check.
+6. **Deterministic leaf choice** – The public randomness is decomposed into 254 bits; the circuit derives 8 leaf indices from non-overlapping 20-bit windows so both prover and verifier agree on the Merkle leaves that must be proven. This prevents selective disclosure.
+7. **Merkle membership** – For each of the 8 openings, the circuit replays the Poseidon2 hash chain using the supplied Merkle path and direction bits, enforcing that the selected leaf links back to the public Merkle root. Minimum proof depth of 1 (at least 2 leaves) and contiguous proof encoding (no active levels after padding) are enforced.
+8. **Groth16 proof generation** – With the full witness (8 private byte arrays, secret key, 8 Merkle paths) the prover produces a Groth16 proof using `poi_prover.key`. On-chain, `poi_verifier.sol` checks the proof against the four public inputs `[commitment, randomness, publicKey, rootHash]`.
 
-The end result is a statement of the form: "Given this commitment, randomness, Merkle root, and public key hash, I know the secret key behind that public key and can reveal a unique chunk inside the Merkle tree that hashes to the commitment," without exposing the chunk contents or secret key on-chain.
+The end result is a statement of the form: "Given this commitment, randomness, Merkle root, and public key hash, I know the secret key behind that public key and can reveal 8 randomly-selected chunks inside the Merkle tree that hash to the commitment," without exposing the chunk contents or secret key on-chain.
 
 ## Public inputs (4 field elements)
 
 | Index | Name | Description |
 |-------|------|-------------|
-| 0 | `commitment` | VRF output: `H(secretKey, msg, randomness, publicKey)` |
+| 0 | `commitment` | VRF output: `H(secretKey, aggMsg, randomness, publicKey)` |
 | 1 | `randomness` | Challenge randomness (determines leaf selection) |
 | 2 | `publicKey` | `H(secretKey)` — registered on-chain during node staking |
 | 3 | `rootHash` | Merkle root of the file's chunk tree |
@@ -78,15 +80,17 @@ go mod download
 
 ### Run integration tests
 ```bash
-go test ./circuits/poi/ -v -timeout 5m    # PoI circuit end-to-end
+go test ./circuits/poi/ -v -timeout 10m   # PoI circuit end-to-end (8 openings)
 go test ./...                              # all circuits
 ```
 The PoI test will:
 1. Compile the circuit and perform a single-party Groth16 setup.
 2. Generate random data (128 KB, 8 chunks) and build a Poseidon2 Merkle tree.
-3. Pick a leaf deterministically from random challenge randomness.
-4. Generate a secret key, derive the public key and VRF commitment.
-5. Build the full circuit witness, generate a Groth16 proof, and verify it.
+3. Pick 8 leaves deterministically from non-overlapping bit windows of the challenge randomness.
+4. Generate a secret key, derive the public key, aggregate message, and VRF commitment.
+5. Build the full circuit witness (8 byte arrays + 8 Merkle proofs), generate a Groth16 proof, and verify it.
+
+The `TestPoIMultipleFileSizes` test additionally verifies the circuit across 2, 4, 8, and 16-chunk files.
 
 ### Generate deterministic proof fixtures
 ```bash
@@ -120,7 +124,7 @@ Both modes write:
 
 ## Integrating into a prover service
 1. **Build chunks and Merkle tree** – Use `merkle.SplitIntoChunks(data, poi.FileSize)` and `merkle.GenerateMerkleTree(chunks, poi.FileSize, poi.HashChunk)`.
-2. **Prepare witness** – Call `poi.PrepareWitness(secretKey, randomness, chunks, merkleTree)`. This derives the chunk index, Merkle proof, public key, message hash, and commitment in one call.
+2. **Prepare witness** – Call `poi.PrepareWitness(secretKey, randomness, chunks, merkleTree)`. This derives all 8 chunk indices (via bit-sliced randomness), their Merkle proofs, the aggregate message, and the VRF commitment in one call.
 3. **Produce a proof** – Call `groth16.Prove` with the proving key and the witness from `PrepareWitness`. The output proof and public inputs can be relayed on-chain.
 
 ## Configuration knobs (PoI)
@@ -129,6 +133,7 @@ Defined in `circuits/poi/config.go`:
 - `ElementSize` (31 bytes) – byte length for each field element inside the circuit.
 - `NumChunks` (528) – derived maximum number of field elements per chunk.
 - `MaxTreeDepth` (20) – maximum Merkle proof depth enforced in the circuit.
+- `OpeningsCount` (8) – number of parallel Merkle openings per proof. Each opening uses a non-overlapping 20-bit window of the randomness for leaf selection.
 
 Adjust these values only when you intend to regenerate the trusted setup and update the verifier contracts, as they alter the circuit constraints.
 
