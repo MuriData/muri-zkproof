@@ -1,16 +1,15 @@
-package utils
+package merkle
 
 import (
 	"bytes"
 	"fmt"
 	"math/big"
 
-	"github.com/MuriData/muri-zkproof/config"
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr"
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr/poseidon2"
 )
 
-// MerkleNode represents a node in the Merkle tree
+// MerkleNode represents a node in the Merkle tree.
 type MerkleNode struct {
 	Hash   *big.Int
 	Left   *MerkleNode
@@ -19,7 +18,7 @@ type MerkleNode struct {
 	IsLeaf bool
 }
 
-// MerkleTree represents the complete Merkle tree
+// MerkleTree represents the complete Merkle tree.
 type MerkleTree struct {
 	Root       *MerkleNode
 	Leaves     []*MerkleNode
@@ -27,7 +26,11 @@ type MerkleTree struct {
 	ChunkCount int
 }
 
-// NewMerkleNode creates a new Merkle tree node
+// HashFunc is the function used to hash leaf chunks. Callers provide it so the
+// merkle package stays independent of circuit-specific hashing parameters.
+type HashFunc func(chunk []byte) *big.Int
+
+// NewMerkleNode creates a new Merkle tree node.
 func NewMerkleNode(hash *big.Int, left, right *MerkleNode) *MerkleNode {
 	node := &MerkleNode{
 		Hash:   hash,
@@ -46,19 +49,17 @@ func NewMerkleNode(hash *big.Int, left, right *MerkleNode) *MerkleNode {
 	return node
 }
 
-// SplitIntoChunks splits the file data into config.FileSize-sized chunks (16 KB).
+// SplitIntoChunks splits the file data into chunkSize-sized chunks.
 // The last chunk is zero-padded so that every returned slice has the same
-// length. An empty input produces a single zero chunk. The function is exported
-// so that callers outside this file (e.g. tests) can reuse the exact same
-// logic and avoid code duplication.
-func SplitIntoChunks(data []byte) [][]byte {
+// length. An empty input produces a single zero chunk.
+func SplitIntoChunks(data []byte, chunkSize int) [][]byte {
 	var chunks [][]byte
 
-	for i := 0; i < len(data); i += config.FileSize {
-		end := i + config.FileSize
+	for i := 0; i < len(data); i += chunkSize {
+		end := i + chunkSize
 		if end > len(data) {
 			// Last chunk - pad with zeros
-			chunk := make([]byte, config.FileSize)
+			chunk := make([]byte, chunkSize)
 			copy(chunk, data[i:])
 			chunks = append(chunks, chunk)
 		} else {
@@ -67,23 +68,17 @@ func SplitIntoChunks(data []byte) [][]byte {
 	}
 
 	if len(chunks) == 0 {
-		chunks = append(chunks, make([]byte, config.FileSize))
+		chunks = append(chunks, make([]byte, chunkSize))
 	}
 
 	return chunks
 }
 
-// hashChunk hashes a single chunk using Poseidon2 with randomness = 1
-func hashChunk(chunk []byte) *big.Int {
-	randomness := big.NewInt(1)
-	return Hash(chunk, randomness)
-}
-
-// hashNodes hashes two node hashes together to create parent hash.
+// HashNodes hashes two node hashes together to create parent hash.
 // Inputs are converted to canonical 32-byte fr.Element encoding so that
 // a zero value writes 32 zero bytes (matching the circuit) instead of
 // the empty slice returned by big.Int.Bytes().
-func hashNodes(left, right *big.Int) *big.Int {
+func HashNodes(left, right *big.Int) *big.Int {
 	h := poseidon2.NewMerkleDamgardHasher()
 
 	var lFr, rFr fr.Element
@@ -98,10 +93,13 @@ func hashNodes(left, right *big.Int) *big.Int {
 	return new(big.Int).SetBytes(h.Sum(nil))
 }
 
-func GenerateMerkleTree(chunks [][]byte) *MerkleTree {
+// GenerateMerkleTree builds a Merkle tree from pre-split chunks.
+// hashLeaf is used to hash each leaf chunk (typically Poseidon2 with randomness=1).
+// chunkSize is the expected size of each chunk (used for zero-padding fallback).
+func GenerateMerkleTree(chunks [][]byte, chunkSize int, hashLeaf HashFunc) *MerkleTree {
 	if len(chunks) == 0 {
 		// No chunks provided - create a single zero chunk
-		chunks = [][]byte{make([]byte, config.FileSize)}
+		chunks = [][]byte{make([]byte, chunkSize)}
 	}
 
 	// Pad to at least two leaves and then to the next power-of-two by
@@ -111,7 +109,7 @@ func GenerateMerkleTree(chunks [][]byte) *MerkleTree {
 	// Create leaf nodes by hashing each chunk
 	leaves := make([]*MerkleNode, len(chunks))
 	for i, chunk := range chunks {
-		leaves[i] = NewMerkleNode(hashChunk(chunk), nil, nil)
+		leaves[i] = NewMerkleNode(hashLeaf(chunk), nil, nil)
 	}
 
 	// Build the tree bottom-up
@@ -128,7 +126,7 @@ func GenerateMerkleTree(chunks [][]byte) *MerkleTree {
 				right = left
 			}
 
-			parent := NewMerkleNode(hashNodes(left.Hash, right.Hash), left, right)
+			parent := NewMerkleNode(HashNodes(left.Hash, right.Hash), left, right)
 			nextLevel = append(nextLevel, parent)
 		}
 		currentLevel = nextLevel
@@ -137,12 +135,12 @@ func GenerateMerkleTree(chunks [][]byte) *MerkleTree {
 	return &MerkleTree{
 		Root:       currentLevel[0],
 		Leaves:     leaves,
-		FileSize:   int64(len(chunks) * config.FileSize), // Approximate
+		FileSize:   int64(len(chunks) * chunkSize),
 		ChunkCount: len(chunks),
 	}
 }
 
-// GetRoot returns the root hash of the Merkle tree
+// GetRoot returns the root hash of the Merkle tree.
 func (mt *MerkleTree) GetRoot() *big.Int {
 	if mt.Root == nil {
 		return big.NewInt(0)
@@ -150,12 +148,12 @@ func (mt *MerkleTree) GetRoot() *big.Int {
 	return mt.Root.Hash
 }
 
-// GetLeafCount returns the number of leaf nodes
+// GetLeafCount returns the number of leaf nodes.
 func (mt *MerkleTree) GetLeafCount() int {
 	return len(mt.Leaves)
 }
 
-// GetHeight returns the height of the tree (number of levels)
+// GetHeight returns the height of the tree (number of levels).
 func (mt *MerkleTree) GetHeight() int {
 	if mt.Root == nil {
 		return 0
@@ -163,7 +161,7 @@ func (mt *MerkleTree) GetHeight() int {
 	return getNodeHeight(mt.Root)
 }
 
-// getNodeHeight calculates the height of a node recursively
+// getNodeHeight calculates the height of a node recursively.
 func getNodeHeight(node *MerkleNode) int {
 	if node == nil || node.IsLeaf {
 		return 1
@@ -178,7 +176,7 @@ func getNodeHeight(node *MerkleNode) int {
 	return rightHeight + 1
 }
 
-// GetMerkleProof generates a Merkle proof for the leaf at the given index
+// GetMerkleProof generates a Merkle proof for the leaf at the given index.
 func (mt *MerkleTree) GetMerkleProof(leafIndex int) ([]*big.Int, []bool, error) {
 	if leafIndex < 0 || leafIndex >= len(mt.Leaves) {
 		return nil, nil, fmt.Errorf("invalid leaf index: %d", leafIndex)
@@ -212,7 +210,7 @@ func (mt *MerkleTree) GetMerkleProof(leafIndex int) ([]*big.Int, []bool, error) 
 	return proof, directions, nil
 }
 
-// VerifyMerkleProof verifies a Merkle proof for a given leaf hash
+// VerifyMerkleProof verifies a Merkle proof for a given leaf hash.
 func VerifyMerkleProof(leafHash *big.Int, proof []*big.Int, directions []bool, rootHash *big.Int) bool {
 	if len(proof) != len(directions) {
 		return false
@@ -226,17 +224,17 @@ func VerifyMerkleProof(leafHash *big.Int, proof []*big.Int, directions []bool, r
 
 		if isRight {
 			// Sibling is on the right
-			current = hashNodes(current, sibling)
+			current = HashNodes(current, sibling)
 		} else {
 			// Sibling is on the left
-			current = hashNodes(sibling, current)
+			current = HashNodes(sibling, current)
 		}
 	}
 
 	return current.Cmp(rootHash) == 0
 }
 
-// String returns a string representation of the tree structure
+// String returns a string representation of the tree structure.
 func (mt *MerkleTree) String() string {
 	if mt.Root == nil {
 		return "Empty tree"
@@ -247,7 +245,7 @@ func (mt *MerkleTree) String() string {
 	return buf.String()
 }
 
-// printNode recursively prints the tree structure
+// printNode recursively prints the tree structure.
 func printNode(node *MerkleNode, prefix string, isLast bool, buf *bytes.Buffer) {
 	if node == nil {
 		return

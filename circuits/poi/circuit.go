@@ -1,7 +1,6 @@
-package circuits
+package poi
 
 import (
-	"github.com/MuriData/muri-zkproof/config"
 	"github.com/consensys/gnark/frontend"
 	"github.com/consensys/gnark/std/hash"
 	"github.com/consensys/gnark/std/permutation/poseidon2"
@@ -15,9 +14,9 @@ type PoICircuit struct {
 	RootHash   frontend.Variable `gnark:"rootHash,public"`
 
 	// Privates
-	SecretKey   frontend.Variable                   `gnark:"secretKey"`
-	Bytes       [config.NumChunks]frontend.Variable `gnark:"bytes"`
-	MerkleProof MerkleProofCircuit                  `gnark:"merkleProof"`
+	SecretKey   frontend.Variable              `gnark:"secretKey"`
+	Bytes       [NumChunks]frontend.Variable   `gnark:"bytes"`
+	MerkleProof MerkleProofCircuit             `gnark:"merkleProof"`
 }
 
 func (circuit *PoICircuit) Define(api frontend.API) error {
@@ -46,8 +45,8 @@ func (circuit *PoICircuit) Define(api frontend.API) error {
 	//    and the message hash becomes constant, breaking data binding.
 	api.AssertIsEqual(api.IsZero(circuit.Randomness), 0)
 	msgHasher := hash.NewMerkleDamgardHasher(api, p, 0)
-	var preImage [config.NumChunks]frontend.Variable
-	for i := 0; i < config.NumChunks; i++ {
+	var preImage [NumChunks]frontend.Variable
+	for i := 0; i < NumChunks; i++ {
 		preImage[i] = api.Mul(circuit.Bytes[i], circuit.Randomness)
 	}
 	msgHasher.Write(preImage[:]...)
@@ -77,9 +76,9 @@ func (circuit *PoICircuit) Define(api frontend.API) error {
 	// BN254 scalar field size is defined in config.FieldBitLen (254 bits).
 	randBitsFull := api.ToBinary(circuit.Randomness, api.Compiler().FieldBitLen())
 	// Slice the bits we actually care about.
-	randBits := randBitsFull[:config.MaxTreeDepth]
+	randBits := randBitsFull[:MaxTreeDepth]
 
-	for i := 0; i < config.MaxTreeDepth; i++ {
+	for i := 0; i < MaxTreeDepth; i++ {
 		sibling := circuit.MerkleProof.ProofPath[i]
 		direction := circuit.MerkleProof.Directions[i]
 
@@ -105,7 +104,7 @@ func (circuit *PoICircuit) Define(api frontend.API) error {
 	// levels must also have a zero sibling. This guarantees that the proof
 	// is encoded contiguously (no active levels after padding).
 	prevActive := frontend.Variable(1) // 1 until we encounter the first zero sibling
-	for i := 0; i < config.MaxTreeDepth; i++ {
+	for i := 0; i < MaxTreeDepth; i++ {
 		siblingIsZero := api.IsZero(circuit.MerkleProof.ProofPath[i])
 		// Disallow any non-zero sibling after we have already seen a zero.
 		// Violation when (prevActive == 0) AND (siblingIsZero == 0).

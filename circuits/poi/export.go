@@ -1,25 +1,21 @@
-package main
+package poi
 
 import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"log"
 	"math/big"
-	"os"
 
-	"github.com/MuriData/muri-zkproof/circuits"
-	"github.com/MuriData/muri-zkproof/config"
-	"github.com/MuriData/muri-zkproof/utils"
+	"github.com/MuriData/muri-zkproof/pkg/merkle"
+	"github.com/MuriData/muri-zkproof/pkg/setup"
 	"github.com/consensys/gnark-crypto/ecc"
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr"
 	"github.com/consensys/gnark/backend/groth16"
 	groth16bn254 "github.com/consensys/gnark/backend/groth16/bn254"
 	"github.com/consensys/gnark/frontend"
-	"github.com/consensys/gnark/frontend/cs/r1cs"
 )
 
-// ProofFixture holds all values needed for Solidity tests
+// ProofFixture holds all values needed for Solidity tests.
 type ProofFixture struct {
 	SolidityProof [8]string `json:"solidity_proof"`
 	Randomness    string    `json:"randomness"`
@@ -28,46 +24,30 @@ type ProofFixture struct {
 	PublicKey     string    `json:"public_key"`
 }
 
-func main() {
+// ExportProofFixture generates a deterministic proof fixture for Solidity tests.
+// keysDir is the directory containing the proving and verifying keys.
+func ExportProofFixture(keysDir string) ([]byte, error) {
 	// 1. Compile the circuit
 	fmt.Println("Compiling circuit...")
-	var poiCircuit circuits.PoICircuit
-	ccs, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, &poiCircuit)
+	ccs, err := setup.CompileCircuit(&PoICircuit{})
 	if err != nil {
-		log.Fatal(err)
+		return nil, fmt.Errorf("compile circuit: %w", err)
 	}
 
 	// 2. Load proving and verifying keys
 	fmt.Println("Loading keys...")
-	pk := groth16.NewProvingKey(ecc.BN254)
-	f, err := os.OpenFile("poi_prover.key", os.O_RDONLY, os.ModeTemporary)
+	pk, vk, err := setup.LoadKeys(keysDir, "poi")
 	if err != nil {
-		log.Fatal("Cannot open poi_prover.key. Run 'go run compile.go' first:", err)
+		return nil, fmt.Errorf("load keys: %w", err)
 	}
-	_, err = pk.ReadFrom(f)
-	if err != nil {
-		log.Fatal(err)
-	}
-	f.Close()
-
-	vk := groth16.NewVerifyingKey(ecc.BN254)
-	f, err = os.OpenFile("poi_verifier.key", os.O_RDONLY, os.ModeTemporary)
-	if err != nil {
-		log.Fatal(err)
-	}
-	_, err = vk.ReadFrom(f)
-	if err != nil {
-		log.Fatal(err)
-	}
-	f.Close()
 
 	// 3. Create a small deterministic test file (32KB, two chunks).
 	//    Minimum two chunks because the circuit requires proof depth >= 1.
-	testFileData := make([]byte, 2*config.FileSize)
+	testFileData := make([]byte, 2*FileSize)
 	for i := range testFileData {
 		testFileData[i] = byte(i % 256)
 	}
-	chunks := utils.SplitIntoChunks(testFileData)
+	chunks := merkle.SplitIntoChunks(testFileData, FileSize)
 	fmt.Printf("Chunks: %d\n", len(chunks))
 
 	// 4. Deterministic randomness and secret key
@@ -84,13 +64,13 @@ func main() {
 	skFr.BigInt(secretKey)
 
 	// 5. Build Merkle tree and prepare the full witness
-	merkleTree := utils.GenerateMerkleTree(chunks)
+	merkleTree := merkle.GenerateMerkleTree(chunks, FileSize, HashChunk)
 	fmt.Printf("Merkle root: 0x%x\n", merkleTree.GetRoot().Bytes())
 	fmt.Printf("Leaves: %d, Height: %d\n", merkleTree.GetLeafCount(), merkleTree.GetHeight())
 
-	result, err := utils.PrepareWitness(secretKey, randomness, chunks, merkleTree)
+	result, err := PrepareWitness(secretKey, randomness, chunks, merkleTree)
 	if err != nil {
-		log.Fatal("Failed to prepare witness:", err)
+		return nil, fmt.Errorf("prepare witness: %w", err)
 	}
 
 	fmt.Printf("Selected chunk index: %d\n", result.ChunkIndex)
@@ -100,24 +80,24 @@ func main() {
 	// 6. Create witness and generate proof
 	witness, err := frontend.NewWitness(&result.Assignment, ecc.BN254.ScalarField())
 	if err != nil {
-		log.Fatal("Failed to create witness:", err)
+		return nil, fmt.Errorf("create witness: %w", err)
 	}
 
 	publicWitness, err := witness.Public()
 	if err != nil {
-		log.Fatal(err)
+		return nil, fmt.Errorf("extract public witness: %w", err)
 	}
 
 	fmt.Println("Generating proof...")
 	proof, err := groth16.Prove(ccs, pk, witness)
 	if err != nil {
-		log.Fatal("Proof generation failed:", err)
+		return nil, fmt.Errorf("prove: %w", err)
 	}
 
 	// 7. Verify proof in Go
 	err = groth16.Verify(proof, vk, publicWitness)
 	if err != nil {
-		log.Fatal("Proof verification failed:", err)
+		return nil, fmt.Errorf("verify: %w", err)
 	}
 	fmt.Println("Proof verified successfully in Go!")
 
@@ -156,12 +136,15 @@ func main() {
 		fixture.SolidityProof[i] = fmt.Sprintf("0x%064x", solidityProof[i])
 	}
 
-	// Output JSON
-	jsonOut, _ := json.MarshalIndent(fixture, "", "  ")
+	jsonOut, err := json.MarshalIndent(fixture, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("marshal fixture: %w", err)
+	}
+
+	// Print diagnostic info
 	fmt.Println("\n=== PROOF FIXTURE (JSON) ===")
 	fmt.Println(string(jsonOut))
 
-	// Output Solidity constants
 	fmt.Println("\n=== SOLIDITY CONSTANTS ===")
 	fmt.Printf("    // Public inputs\n")
 	fmt.Printf("    uint256 constant ZK_RANDOMNESS = %s;\n", fixture.Randomness)
@@ -181,26 +164,22 @@ func main() {
 	}
 	fmt.Println("    }")
 
-	// Write fixture
-	os.WriteFile("proof_fixture.json", jsonOut, 0644)
-	fmt.Println("\nFixture written to proof_fixture.json")
-
 	// Public witness info
 	fmt.Println("\n=== PUBLIC WITNESS ORDER ===")
 	fmt.Println("In gnark circuit (= Solidity order): [commitment, randomness, publicKey, rootHash]")
 	var pubWitBuf bytes.Buffer
 	_, err = publicWitness.WriteTo(&pubWitBuf)
 	if err != nil {
-		log.Fatal(err)
+		return nil, fmt.Errorf("write public witness: %w", err)
 	}
 	fmt.Printf("Public witness size: %d bytes\n", pubWitBuf.Len())
 
-	// gnark orders: commitment(0), randomness(1), publicKey(2), rootHash(3)
-	// gnark's ExportSolidity maps gnark indices [0..3] to Solidity indices in the same order
 	fmt.Println("\ngnark public input order (from circuit struct tags):")
 	fmt.Println("  [0] commitment")
 	fmt.Println("  [1] randomness")
 	fmt.Println("  [2] publicKey")
 	fmt.Println("  [3] rootHash")
 	fmt.Println("\nMake sure Market.sol's publicInputs array matches this order!")
+
+	return jsonOut, nil
 }

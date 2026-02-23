@@ -1,24 +1,23 @@
-package circuits
+package poi
 
 import (
-	"github.com/MuriData/muri-zkproof/config"
 	"github.com/consensys/gnark/frontend"
 	"github.com/consensys/gnark/std/hash"
 	"github.com/consensys/gnark/std/permutation/poseidon2"
 )
 
-// MerkleProofCircuit represents a circuit for verifying Merkle proofs
+// MerkleProofCircuit represents a circuit for verifying Merkle proofs.
 type MerkleProofCircuit struct {
 	// Public inputs
 	RootHash frontend.Variable `gnark:"rootHash"`
 
 	// Private inputs
-	LeafValue  frontend.Variable                      `gnark:"leafValue"`  // The actual data value we're proving membership of
-	ProofPath  [config.MaxTreeDepth]frontend.Variable `gnark:"proofPath"`  // Sibling hashes along the path to root
-	Directions [config.MaxTreeDepth]frontend.Variable `gnark:"directions"` // 0 = sibling on right, 1 = sibling on left
+	LeafValue  frontend.Variable                    `gnark:"leafValue"`  // The actual data value we're proving membership of
+	ProofPath  [MaxTreeDepth]frontend.Variable `gnark:"proofPath"`  // Sibling hashes along the path to root
+	Directions [MaxTreeDepth]frontend.Variable `gnark:"directions"` // 0 = sibling on right, 1 = sibling on left
 }
 
-// Define implements the circuit logic for Merkle proof verification
+// Define implements the circuit logic for Merkle proof verification.
 func (circuit *MerkleProofCircuit) Define(api frontend.API) error {
 	// Initialize Poseidon2 hasher
 	p, err := poseidon2.NewPoseidon2FromParameters(api, 2, 6, 50)
@@ -31,7 +30,7 @@ func (circuit *MerkleProofCircuit) Define(api frontend.API) error {
 
 	// Step 2: Verify the proof path
 	// We'll process exactly MaxTreeDepth levels; padding nodes have sibling=0 so they don't alter the hash or constraints.
-	for i := 0; i < config.MaxTreeDepth; i++ {
+	for i := 0; i < MaxTreeDepth; i++ {
 		// Get the sibling hash for this level
 		sibling := circuit.ProofPath[i]
 		direction := circuit.Directions[i]

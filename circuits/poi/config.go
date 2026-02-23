@@ -1,4 +1,4 @@
-package config
+package poi
 
 const (
 	FileSize    = 16 * 1024
