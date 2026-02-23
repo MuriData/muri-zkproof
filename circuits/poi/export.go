@@ -41,9 +41,9 @@ func ExportProofFixture(keysDir string) ([]byte, error) {
 		return nil, fmt.Errorf("load keys: %w", err)
 	}
 
-	// 3. Create a small deterministic test file (32KB, two chunks).
-	//    Minimum two chunks because the circuit requires proof depth >= 1.
-	testFileData := make([]byte, 2*FileSize)
+	// 3. Create a deterministic test file (128 KB = 8 chunks).
+	//    Using 8 chunks exercises all OpeningsCount openings with distinct leaves.
+	testFileData := make([]byte, 8*FileSize)
 	for i := range testFileData {
 		testFileData[i] = byte(i % 256)
 	}
@@ -73,7 +73,7 @@ func ExportProofFixture(keysDir string) ([]byte, error) {
 		return nil, fmt.Errorf("prepare witness: %w", err)
 	}
 
-	fmt.Printf("Selected chunk index: %d\n", result.ChunkIndex)
+	fmt.Printf("Selected chunk indices: %v\n", result.ChunkIndices)
 	fmt.Printf("Public key (H(sk)): 0x%064x\n", result.PublicKey)
 	fmt.Printf("Commitment: 0x%064x\n", result.Commitment)
 

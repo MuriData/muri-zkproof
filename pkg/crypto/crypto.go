@@ -78,6 +78,27 @@ func DerivePublicKey(secretKey *big.Int) *big.Int {
 	return new(big.Int).SetBytes(h.Sum(nil))
 }
 
+// DeriveAggMsg computes the aggregate message from multiple leaf hashes and
+// randomness: aggMsg = H(leafHash[0], ..., leafHash[n-1], randomness).
+// This matches the multi-opening circuit's aggregate message computation.
+func DeriveAggMsg(leafHashes []*big.Int, randomness *big.Int) *big.Int {
+	h := poseidon2.NewMerkleDamgardHasher()
+
+	for _, lh := range leafHashes {
+		var elem fr.Element
+		elem.SetBigInt(lh)
+		b := elem.Bytes()
+		h.Write(b[:])
+	}
+
+	var randFr fr.Element
+	randFr.SetBigInt(randomness)
+	randBytes := randFr.Bytes()
+	h.Write(randBytes[:])
+
+	return new(big.Int).SetBytes(h.Sum(nil))
+}
+
 // DeriveCommitment computes the VRF-style commitment matching the circuit:
 // commitment = H(secretKey, msg, randomness, publicKey)
 func DeriveCommitment(secretKey, msg, randomness, publicKey *big.Int) *big.Int {

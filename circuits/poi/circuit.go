@@ -14,9 +14,9 @@ type PoICircuit struct {
 	RootHash   frontend.Variable `gnark:"rootHash,public"`
 
 	// Privates
-	SecretKey   frontend.Variable              `gnark:"secretKey"`
-	Bytes       [NumChunks]frontend.Variable   `gnark:"bytes"`
-	MerkleProof MerkleProofCircuit             `gnark:"merkleProof"`
+	SecretKey    frontend.Variable                           `gnark:"secretKey"`
+	Bytes        [OpeningsCount][NumChunks]frontend.Variable `gnark:"bytes"`
+	MerkleProofs [OpeningsCount]MerkleProofCircuit           `gnark:"merkleProofs"`
 }
 
 func (circuit *PoICircuit) Define(api frontend.API) error {
@@ -25,10 +25,7 @@ func (circuit *PoICircuit) Define(api frontend.API) error {
 		return err
 	}
 
-	// 1. Key ownership: publicKey == H(secretKey).
-	//    The on-chain registered public key is the hash of the secret key.
-	//    Both must be non-zero: a zero secret key is trivially known and a
-	//    zero public key would bypass on-chain identity checks.
+	// 1. Key ownership: publicKey == H(secretKey), both non-zero.
 	api.AssertIsEqual(api.IsZero(circuit.SecretKey), 0)
 	api.AssertIsEqual(api.IsZero(circuit.PublicKey), 0)
 
@@ -39,96 +36,71 @@ func (circuit *PoICircuit) Define(api frontend.API) error {
 
 	api.AssertIsEqual(circuit.PublicKey, derivedPubKey)
 
-	// 2. Message: msg = H(Bytes * Randomness).
-	//    Binds the private data to the public randomness.
-	//    Randomness must be non-zero; otherwise Bytes * 0 = 0 for all chunks
-	//    and the message hash becomes constant, breaking data binding.
+	// 2. Randomness decomposition (once for all openings).
 	api.AssertIsEqual(api.IsZero(circuit.Randomness), 0)
-	msgHasher := hash.NewMerkleDamgardHasher(api, p, 0)
-	var preImage [NumChunks]frontend.Variable
-	for i := 0; i < NumChunks; i++ {
-		preImage[i] = api.Mul(circuit.Bytes[i], circuit.Randomness)
-	}
-	msgHasher.Write(preImage[:]...)
-	msg := msgHasher.Sum()
-	msgHasher.Reset()
+	randBitsFull := api.ToBinary(circuit.Randomness, api.Compiler().FieldBitLen())
 
-	// 3. VRF commitment: commitment = H(secretKey, msg, randomness, publicKey).
-	//    Deterministic and uniquely bound to the secret key — prover cannot bias
-	//    the output without using a different key, which fails step 1.
+	// 3. Per-opening: leaf hash, Merkle link, direction enforcement, monotonicity, verify.
+	var leafHashes [OpeningsCount]frontend.Variable
+
+	for k := 0; k < OpeningsCount; k++ {
+		// 3a. Compute leaf hash from raw data chunk.
+		leafHasher := hash.NewMerkleDamgardHasher(api, p, 0)
+		leafHasher.Write(circuit.Bytes[k][:]...)
+		leafHashes[k] = leafHasher.Sum()
+		leafHasher.Reset()
+
+		// 3b. Link computed leaf hash and public root to the sub-circuit.
+		api.AssertIsEqual(circuit.MerkleProofs[k].LeafValue, leafHashes[k])
+		api.AssertIsEqual(circuit.MerkleProofs[k].RootHash, circuit.RootHash)
+
+		// 3c. Direction enforcement from bit window [k*MaxTreeDepth .. (k+1)*MaxTreeDepth-1].
+		bitOffset := k * MaxTreeDepth
+		for j := 0; j < MaxTreeDepth; j++ {
+			sibling := circuit.MerkleProofs[k].ProofPath[j]
+			direction := circuit.MerkleProofs[k].Directions[j]
+
+			isActive := api.Sub(1, api.IsZero(sibling))
+			expectedDir := api.Sub(1, randBitsFull[bitOffset+j])
+			diff := api.Sub(direction, expectedDir)
+			api.AssertIsEqual(api.Mul(diff, isActive), 0)
+		}
+
+		// 3d. Monotonicity: once a zero sibling appears, all subsequent must be zero.
+		prevActive := frontend.Variable(1)
+		for j := 0; j < MaxTreeDepth; j++ {
+			siblingIsZero := api.IsZero(circuit.MerkleProofs[k].ProofPath[j])
+			viol := api.Mul(api.Sub(1, prevActive), api.Sub(1, siblingIsZero))
+			api.AssertIsEqual(viol, 0)
+			prevActive = api.Mul(prevActive, api.Sub(1, siblingIsZero))
+		}
+
+		// 3e. Verify the Merkle proof.
+		circuit.MerkleProofs[k].Define(api)
+	}
+
+	// 4. Minimum depth: at least one hashing level (depth >= 1) on the first opening.
+	api.AssertIsEqual(api.IsZero(circuit.MerkleProofs[0].ProofPath[0]), 0)
+
+	// 5. Aggregate message: aggMsg = H(leafHash[0], ..., leafHash[7], randomness).
+	aggHasher := hash.NewMerkleDamgardHasher(api, p, 0)
+	for k := 0; k < OpeningsCount; k++ {
+		aggHasher.Write(leafHashes[k])
+	}
+	aggHasher.Write(circuit.Randomness)
+	aggMsg := aggHasher.Sum()
+	aggHasher.Reset()
+
+	// 6. VRF commitment: commitment = H(secretKey, aggMsg, randomness, publicKey).
 	vrfHasher := hash.NewMerkleDamgardHasher(api, p, 0)
 	vrfHasher.Write(circuit.SecretKey)
-	vrfHasher.Write(msg)
+	vrfHasher.Write(aggMsg)
 	vrfHasher.Write(circuit.Randomness)
 	vrfHasher.Write(circuit.PublicKey)
 	derivedCommitment := vrfHasher.Sum()
 	vrfHasher.Reset()
 
 	api.AssertIsEqual(circuit.Commitment, derivedCommitment)
-
-	// 4. Deterministic Leaf Selection: Generate a direction bit list from randomness
-	//    and ensure MerkleProof directions align with this list for all valid levels.
-	//    We only need the first MaxTreeDepth bits to navigate the Merkle path, but we
-	//    must *not* constrain the higher bits of `Randomness` to zero. Therefore we
-	//    decompose the full 254-bit scalar (field size for BN254) and then use the
-	//    first `MaxTreeDepth` bits for the direction checks.
-
-	// BN254 scalar field size is defined in config.FieldBitLen (254 bits).
-	randBitsFull := api.ToBinary(circuit.Randomness, api.Compiler().FieldBitLen())
-	// Slice the bits we actually care about.
-	randBits := randBitsFull[:MaxTreeDepth]
-
-	for i := 0; i < MaxTreeDepth; i++ {
-		sibling := circuit.MerkleProof.ProofPath[i]
-		direction := circuit.MerkleProof.Directions[i]
-
-		// Only enforce when the sibling hash is non-zero (i.e., this level is part of the actual proof).
-		isActive := api.Sub(1, api.IsZero(sibling)) // 1 when sibling != 0
-
-		// Mapping: if leafBit==0 (we are left), sibling is right (direction==0)
-		// leafBit = 1 - randBit, so expected direction = 1 - randBit
-		expectedDir := api.Sub(1, randBits[i])
-		diff := api.Sub(direction, expectedDir)
-		api.AssertIsEqual(api.Mul(diff, isActive), 0)
-	}
-
-	// --- Minimum proof depth ---
-	// Reject 0-depth proofs where all siblings are zero. With 0-depth the
-	// Merkle sub-circuit only checks leafHash == rootHash, letting a prover
-	// bypass the tree structure entirely. Requiring the first sibling to be
-	// non-zero ensures at least one hashing level (depth >= 1, i.e. >= 2 leaves).
-	api.AssertIsEqual(api.IsZero(circuit.MerkleProof.ProofPath[0]), 0)
-
-	// --- Proof length monotonicity ---
-	// Enforce that once a zero sibling hash is encountered, all subsequent
-	// levels must also have a zero sibling. This guarantees that the proof
-	// is encoded contiguously (no active levels after padding).
-	prevActive := frontend.Variable(1) // 1 until we encounter the first zero sibling
-	for i := 0; i < MaxTreeDepth; i++ {
-		siblingIsZero := api.IsZero(circuit.MerkleProof.ProofPath[i])
-		// Disallow any non-zero sibling after we have already seen a zero.
-		// Violation when (prevActive == 0) AND (siblingIsZero == 0).
-		viol := api.Mul(api.Sub(1, prevActive), api.Sub(1, siblingIsZero))
-		api.AssertIsEqual(viol, 0)
-		// Update prevActive: stays 1 while siblingIsZero==0, flips to 0 at first zero.
-		prevActive = api.Mul(prevActive, api.Sub(1, siblingIsZero))
-	}
-
-	// 5. Merkle Proof: Prove the selected data chunk (Bytes) exists at the
-	//    proven LeafIndex within the committed Merkle tree (RootHash).
-	// a) Compute the leaf hash from the raw data chunk.
-	leafHasher := hash.NewMerkleDamgardHasher(api, p, 0)
-	leafHasher.Write(circuit.Bytes[:]...)
-	leafHash := leafHasher.Sum()
-	leafHasher.Reset()
-
-	// b) Link the computed leaf hash and public root hash to the sub-circuit.
-	api.AssertIsEqual(circuit.MerkleProof.RootHash, circuit.RootHash)
-	api.AssertIsEqual(circuit.MerkleProof.LeafValue, leafHash)
-
-	// c) Verify the Merkle path itself. This sub-circuit call recomputes the
-	//    root hash using the provided proof path and directions.
-	circuit.MerkleProof.Define(api)
 
 	return nil
 }

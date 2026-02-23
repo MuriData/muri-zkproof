@@ -60,7 +60,7 @@ func TestPoICircuitEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("prepare witness: %v", err)
 	}
-	t.Logf("Selected chunk index: %d", result.ChunkIndex)
+	t.Logf("Selected chunk indices: %v", result.ChunkIndices)
 
 	// 6. Create witness and generate proof
 	witness, err := frontend.NewWitness(&result.Assignment, ecc.BN254.ScalarField())
@@ -85,6 +85,81 @@ func TestPoICircuitEndToEnd(t *testing.T) {
 	}
 
 	t.Log("ZK proof verified successfully!")
+}
+
+// TestPoIMultipleFileSizes verifies the circuit works for various file sizes.
+// For small files (< 8 leaves), multiple openings hit the same leaf via wrapping.
+func TestPoIMultipleFileSizes(t *testing.T) {
+	// Compile and setup once — reuse for all sub-tests.
+	ccs, err := setup.CompileCircuit(&poi.PoICircuit{})
+	if err != nil {
+		t.Fatalf("compile circuit: %v", err)
+	}
+	pk, vk, err := groth16.Setup(ccs)
+	if err != nil {
+		t.Fatalf("groth16 setup: %v", err)
+	}
+
+	fileSizes := []struct {
+		name       string
+		chunkCount int
+	}{
+		{"2_chunks_32KB", 2},
+		{"4_chunks_64KB", 4},
+		{"8_chunks_128KB", 8},
+		{"16_chunks_256KB", 16},
+	}
+
+	for _, fs := range fileSizes {
+		t.Run(fs.name, func(t *testing.T) {
+			testFileSize := fs.chunkCount * poi.FileSize
+			wholeFileData := make([]byte, testFileSize)
+			if _, err := rand.Read(wholeFileData); err != nil {
+				t.Fatalf("generate random data: %v", err)
+			}
+			chunks := merkle.SplitIntoChunks(wholeFileData, poi.FileSize)
+			t.Logf("Chunks: %d", len(chunks))
+
+			randomness, err := rand.Int(rand.Reader, ecc.BN254.ScalarField())
+			if err != nil {
+				t.Fatalf("generate randomness: %v", err)
+			}
+			secretKey, err := crypto.GenerateSecretKey()
+			if err != nil {
+				t.Fatalf("generate secret key: %v", err)
+			}
+
+			merkleTree := merkle.GenerateMerkleTree(chunks, poi.FileSize, poi.HashChunk)
+			t.Logf("Leaves: %d, Height: %d", merkleTree.GetLeafCount(), merkleTree.GetHeight())
+
+			result, err := poi.PrepareWitness(secretKey, randomness, chunks, merkleTree)
+			if err != nil {
+				t.Fatalf("prepare witness: %v", err)
+			}
+			t.Logf("Chunk indices: %v", result.ChunkIndices)
+
+			witness, err := frontend.NewWitness(&result.Assignment, ecc.BN254.ScalarField())
+			if err != nil {
+				t.Fatalf("create witness: %v", err)
+			}
+			publicWitness, err := witness.Public()
+			if err != nil {
+				t.Fatalf("extract public witness: %v", err)
+			}
+
+			proof, err := groth16.Prove(ccs, pk, witness)
+			if err != nil {
+				t.Fatalf("prove: %v", err)
+			}
+
+			err = groth16.Verify(proof, vk, publicWitness)
+			if err != nil {
+				t.Fatalf("verify: %v", err)
+			}
+
+			t.Log("Proof verified OK")
+		})
+	}
 }
 
 // TestPoIExportFixture generates a deterministic fixture and verifies

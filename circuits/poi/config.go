@@ -5,5 +5,6 @@ const (
 	ElementSize = 31 // bytes
 	NumChunks   = int((FileSize + ElementSize - 1) / ElementSize)
 
-	MaxTreeDepth = 20
+	MaxTreeDepth  = 20
+	OpeningsCount = 8 // number of parallel Merkle openings per proof
 )
