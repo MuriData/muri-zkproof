@@ -5,14 +5,22 @@ import (
 	"log"
 	"os"
 
+	"github.com/MuriData/muri-zkproof/circuits/keyleak"
 	"github.com/MuriData/muri-zkproof/circuits/poi"
 	"github.com/MuriData/muri-zkproof/pkg/setup"
 	"github.com/consensys/gnark/frontend"
 )
 
-// circuitRegistry maps circuit names to their constructors.
-var circuitRegistry = map[string]func() frontend.Circuit{
-	"poi": func() frontend.Circuit { return &poi.PoICircuit{} },
+// CircuitEntry pairs a circuit constructor with its proof backend.
+type CircuitEntry struct {
+	NewCircuit func() frontend.Circuit
+	Backend    setup.Backend
+}
+
+// circuitRegistry maps circuit names to their entries.
+var circuitRegistry = map[string]CircuitEntry{
+	"poi":     {NewCircuit: func() frontend.Circuit { return &poi.PoICircuit{} }, Backend: setup.Groth16Backend},
+	"keyleak": {NewCircuit: func() frontend.Circuit { return &keyleak.KeyLeakCircuit{} }, Backend: setup.PlonkBackend},
 }
 
 func main() {
@@ -22,7 +30,7 @@ func main() {
 	}
 
 	circuitName := os.Args[1]
-	newCircuit, ok := circuitRegistry[circuitName]
+	entry, ok := circuitRegistry[circuitName]
 	if !ok {
 		fmt.Fprintf(os.Stderr, "Unknown circuit: %s\n", circuitName)
 		fmt.Fprintf(os.Stderr, "Available circuits: ")
@@ -35,15 +43,25 @@ func main() {
 
 	switch os.Args[2] {
 	case "dev":
-		if err := setup.DevSetup(newCircuit(), ".", circuitName); err != nil {
-			log.Fatal(err)
+		switch entry.Backend {
+		case setup.Groth16Backend:
+			if err := setup.DevSetup(entry.NewCircuit(), ".", circuitName); err != nil {
+				log.Fatal(err)
+			}
+		case setup.PlonkBackend:
+			if err := setup.PlonkDevSetup(entry.NewCircuit(), ".", circuitName); err != nil {
+				log.Fatal(err)
+			}
 		}
 	case "ceremony":
+		if entry.Backend != setup.Groth16Backend {
+			log.Fatalf("MPC ceremony is only supported for Groth16 circuits. %q uses PLONK (universal SRS).", circuitName)
+		}
 		if len(os.Args) < 4 {
 			printUsage()
 			os.Exit(1)
 		}
-		handleCeremony(circuitName, newCircuit)
+		handleCeremony(circuitName, entry.NewCircuit)
 	default:
 		printUsage()
 		os.Exit(1)
@@ -90,7 +108,7 @@ func handleCeremony(circuitName string, newCircuit func() frontend.Circuit) {
 
 func printUsage() {
 	fmt.Println(`Usage:
-  go run ./cmd/compile <circuit> dev                         Dev mode (single-party setup, NOT for production)
+  go run ./cmd/compile <circuit> dev                         Dev mode (single-party/unsafe setup, NOT for production)
 
   go run ./cmd/compile <circuit> ceremony p1-init            Initialize Phase 1 (Powers of Tau)
   go run ./cmd/compile <circuit> ceremony p1-contribute      Add a Phase 1 contribution
@@ -100,9 +118,12 @@ func printUsage() {
   go run ./cmd/compile <circuit> ceremony p2-contribute      Add a Phase 2 contribution
   go run ./cmd/compile <circuit> ceremony p2-verify HEX      Verify Phase 2, seal & export keys
 
-Available circuits: poi
+Available circuits: poi (Groth16), keyleak (PLONK)
 
-Ceremony workflow:
+Note: MPC ceremony is only available for Groth16 circuits.
+      PLONK circuits use a universal SRS and only need "dev" setup.
+
+Ceremony workflow (Groth16 only):
   1. p1-init          Coordinator creates the initial Phase 1 state
   2. p1-contribute    Each participant contributes (repeat N times)
   3. p1-verify        Coordinator verifies all & seals with a public beacon

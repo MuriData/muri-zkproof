@@ -14,10 +14,21 @@ import (
 	"github.com/consensys/gnark-crypto/ecc"
 	"github.com/consensys/gnark/backend/groth16"
 	"github.com/consensys/gnark/backend/groth16/bn254/mpcsetup"
+	"github.com/consensys/gnark/backend/plonk"
 	"github.com/consensys/gnark/constraint"
 	cs_bn254 "github.com/consensys/gnark/constraint/bn254"
 	"github.com/consensys/gnark/frontend"
 	"github.com/consensys/gnark/frontend/cs/r1cs"
+	"github.com/consensys/gnark/frontend/cs/scs"
+	"github.com/consensys/gnark/test/unsafekzg"
+)
+
+// Backend selects which proof system to use for a circuit.
+type Backend int
+
+const (
+	Groth16Backend Backend = iota
+	PlonkBackend
 )
 
 // CompileCircuit compiles a gnark circuit into a constraint system.
@@ -94,6 +105,109 @@ func LoadKeys(dir, circuitName string) (groth16.ProvingKey, groth16.VerifyingKey
 	f.Close()
 
 	vk := groth16.NewVerifyingKey(ecc.BN254)
+	vkPath := filepath.Join(dir, circuitName+"_verifier.key")
+	f, err = os.Open(vkPath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("open verifying key: %w", err)
+	}
+	if _, err := vk.ReadFrom(f); err != nil {
+		f.Close()
+		return nil, nil, fmt.Errorf("read verifying key: %w", err)
+	}
+	f.Close()
+
+	return pk, vk, nil
+}
+
+// ─── PLONK ───────────────────────────────────────────────────────────────────
+
+// CompileCircuitForBackend compiles a circuit using the builder for the given backend.
+func CompileCircuitForBackend(circuit frontend.Circuit, b Backend) (constraint.ConstraintSystem, error) {
+	var builder frontend.NewBuilder
+	switch b {
+	case Groth16Backend:
+		builder = r1cs.NewBuilder
+	case PlonkBackend:
+		builder = scs.NewBuilder
+	default:
+		return nil, fmt.Errorf("unknown backend: %d", b)
+	}
+	ccs, err := frontend.Compile(ecc.BN254.ScalarField(), builder, circuit)
+	if err != nil {
+		return nil, fmt.Errorf("compile circuit: %w", err)
+	}
+	return ccs, nil
+}
+
+// PlonkDevSetup performs a single-party PLONK setup (NOT for production).
+// It writes the proving key, verifying key, and Solidity verifier to outputDir.
+func PlonkDevSetup(circuit frontend.Circuit, outputDir, circuitName string) error {
+	fmt.Println("================================================================")
+	fmt.Println("  WARNING: Unsafe KZG SRS (1-of-1 trust assumption)")
+	fmt.Println("  DO NOT use these keys in production.")
+	fmt.Println("  PLONK uses a universal SRS — no circuit-specific ceremony needed.")
+	fmt.Println("================================================================")
+
+	ccs, err := CompileCircuitForBackend(circuit, PlonkBackend)
+	if err != nil {
+		return err
+	}
+
+	srs, srsLagrange, err := unsafekzg.NewSRS(ccs)
+	if err != nil {
+		return fmt.Errorf("generate unsafe KZG SRS: %w", err)
+	}
+
+	pk, vk, err := plonk.Setup(ccs, srs, srsLagrange)
+	if err != nil {
+		return fmt.Errorf("plonk setup: %w", err)
+	}
+
+	return ExportPlonkKeys(pk, vk, outputDir, circuitName)
+}
+
+// ExportPlonkKeys writes PLONK proving key, verifying key, and Solidity verifier to outputDir.
+func ExportPlonkKeys(pk plonk.ProvingKey, vk plonk.VerifyingKey, outputDir, circuitName string) error {
+	if err := os.MkdirAll(outputDir, 0o755); err != nil {
+		return fmt.Errorf("create output dir: %w", err)
+	}
+
+	solPath := filepath.Join(outputDir, circuitName+"_verifier.sol")
+	f, err := os.Create(solPath)
+	if err != nil {
+		return fmt.Errorf("create solidity verifier: %w", err)
+	}
+	if err := vk.ExportSolidity(f); err != nil {
+		f.Close()
+		return fmt.Errorf("export solidity verifier: %w", err)
+	}
+	f.Close()
+
+	vkPath := filepath.Join(outputDir, circuitName+"_verifier.key")
+	saveObject(vkPath, vk)
+
+	pkPath := filepath.Join(outputDir, circuitName+"_prover.key")
+	saveObject(pkPath, pk)
+
+	fmt.Printf("Exported: %s, %s, %s\n", pkPath, vkPath, solPath)
+	return nil
+}
+
+// LoadPlonkKeys loads PLONK proving and verifying keys from the given directory.
+func LoadPlonkKeys(dir, circuitName string) (plonk.ProvingKey, plonk.VerifyingKey, error) {
+	pk := plonk.NewProvingKey(ecc.BN254)
+	pkPath := filepath.Join(dir, circuitName+"_prover.key")
+	f, err := os.Open(pkPath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("open proving key: %w", err)
+	}
+	if _, err := pk.ReadFrom(f); err != nil {
+		f.Close()
+		return nil, nil, fmt.Errorf("read proving key: %w", err)
+	}
+	f.Close()
+
+	vk := plonk.NewVerifyingKey(ecc.BN254)
 	vkPath := filepath.Join(dir, circuitName+"_verifier.key")
 	f, err = os.Open(vkPath)
 	if err != nil {

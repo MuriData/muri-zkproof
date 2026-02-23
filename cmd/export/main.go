@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 
+	"github.com/MuriData/muri-zkproof/circuits/keyleak"
 	"github.com/MuriData/muri-zkproof/circuits/poi"
 )
 
@@ -12,7 +13,7 @@ func main() {
 	if len(os.Args) < 2 {
 		fmt.Println("Usage: go run ./cmd/export <circuit>")
 		fmt.Println()
-		fmt.Println("Available circuits: poi")
+		fmt.Println("Available circuits: poi, keyleak")
 		fmt.Println()
 		fmt.Println("Keys must exist in the current directory (run `go run ./cmd/compile <circuit> dev` first).")
 		os.Exit(1)
@@ -29,9 +30,18 @@ func main() {
 			log.Fatalf("write fixture file: %v", err)
 		}
 		fmt.Println("\nFixture written to proof_fixture.json")
+	case "keyleak":
+		jsonOut, err := keyleak.ExportProofFixture(".")
+		if err != nil {
+			log.Fatalf("export proof fixture: %v", err)
+		}
+		if err := os.WriteFile("proof_fixture.json", jsonOut, 0644); err != nil {
+			log.Fatalf("write fixture file: %v", err)
+		}
+		fmt.Println("\nFixture written to proof_fixture.json")
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown circuit: %s\n", circuit)
-		fmt.Fprintln(os.Stderr, "Available circuits: poi")
+		fmt.Fprintln(os.Stderr, "Available circuits: poi, keyleak")
 		os.Exit(1)
 	}
 }
