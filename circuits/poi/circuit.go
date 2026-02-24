@@ -4,6 +4,7 @@ import (
 	"math/big"
 
 	"github.com/MuriData/muri-zkproof/pkg/crypto"
+	"github.com/MuriData/muri-zkproof/pkg/merkle"
 	"github.com/consensys/gnark/frontend"
 	"github.com/consensys/gnark/std/hash"
 	"github.com/consensys/gnark/std/math/bits"
@@ -15,8 +16,17 @@ import (
 // at package init. It is used as a circuit constant.
 var zeroLeafHash *big.Int
 
+// zeroSubtreeHashes[j] is the hash of an all-zero subtree of depth j.
+// zeroSubtreeHashes[0] = zeroLeafHash, zeroSubtreeHashes[j] = H(zh[j-1], zh[j-1]).
+// Used by the FSP-style sibling zero-checks on the boundary proof.
+var zeroSubtreeHashes [MaxTreeDepth]*big.Int
+
 func init() {
 	zeroLeafHash = crypto.ComputeZeroLeafHash(ElementSize, NumChunks)
+	zh := merkle.PrecomputeZeroHashes(MaxTreeDepth, zeroLeafHash)
+	for i := 0; i < MaxTreeDepth; i++ {
+		zeroSubtreeHashes[i] = zh[i]
+	}
 }
 
 type PoICircuit struct {
@@ -34,9 +44,9 @@ type PoICircuit struct {
 	Quotients    [OpeningsCount]frontend.Variable            `gnark:"quotients"`
 	LeafIndices  [OpeningsCount]frontend.Variable            `gnark:"leafIndices"`
 
-	// Boundary proofs (path-only, no byte arrays)
-	BoundaryLower BoundaryMerkleProof `gnark:"boundaryLower"`
-	BoundaryUpper BoundaryMerkleProof `gnark:"boundaryUpper"`
+	// Boundary proof: single Merkle proof of leaf at numLeaves-1.
+	// Replaces the old two-proof approach with FSP-style sibling zero-checks.
+	BoundaryProof BoundaryMerkleProof `gnark:"boundaryProof"`
 }
 
 func (circuit *PoICircuit) Define(api frontend.API) error {
@@ -64,56 +74,42 @@ func (circuit *PoICircuit) Define(api frontend.API) error {
 	randBitsFull := api.ToBinary(circuit.Randomness, api.Compiler().FieldBitLen())
 
 	// ---------------------------------------------------------------
-	// 3. NumLeaves validation and boundary proofs.
+	// 3. NumLeaves validation + FSP-style boundary proof.
+	//    Single Merkle proof of leaf[numLeaves-1] with sibling zero-checks.
 	// ---------------------------------------------------------------
-	// numLeaves ∈ [1, TotalLeaves].
-	// Range check: ToBinary(numLeaves - 1, MaxTreeDepth) constrains
-	// numLeaves - 1 ∈ [0, 2^20 - 1], i.e. numLeaves ∈ [1, 2^20].
+	// Range check: numLeaves in [1, TotalLeaves].
 	api.AssertIsEqual(api.IsZero(circuit.NumLeaves), 0)
-	api.ToBinary(api.Sub(circuit.NumLeaves, 1), MaxTreeDepth)
 
-	// isFull == 1 when numLeaves == TotalLeaves (tree completely filled).
-	totalLeavesConst := frontend.Variable(TotalLeaves)
-	isFull := api.IsZero(api.Sub(circuit.NumLeaves, totalLeavesConst))
-	isNotFull := api.Sub(1, isFull)
+	lastIdx := api.Sub(circuit.NumLeaves, 1)
+	lastBits := api.ToBinary(lastIdx, MaxTreeDepth)
 
-	// Zero leaf hash as circuit constant.
+	// Direction bits must match the binary decomposition of lastIdx.
+	for j := 0; j < MaxTreeDepth; j++ {
+		api.AssertIsEqual(circuit.BoundaryProof.Directions[j], lastBits[j])
+	}
+
+	// Leaf must be non-zero (real data, not padding).
 	zeroLeafConst := frontend.Variable(zeroLeafHash)
+	api.AssertIsEqual(api.IsZero(api.Sub(circuit.BoundaryProof.LeafHash, zeroLeafConst)), 0)
 
-	// --- Lower boundary: leaf at index (numLeaves - 1) must NOT be zero ---
-	lowerIdx := api.Sub(circuit.NumLeaves, 1)
-	lowerBits := api.ToBinary(lowerIdx, MaxTreeDepth)
+	// Zero-sibling check: at each level where last is a left child
+	// (bit = 0), the sibling must equal the zero subtree hash for
+	// that level. This proves no real chunk exists beyond lastIdx.
+	// When numLeaves == TotalLeaves, all bits are 1 (right child at
+	// every level), so no zero-sibling checks are enforced.
 	for j := 0; j < MaxTreeDepth; j++ {
-		api.AssertIsEqual(circuit.BoundaryLower.Directions[j], lowerBits[j])
+		zhConst := frontend.Variable(zeroSubtreeHashes[j])
+		isLeftChild := api.Sub(1, lastBits[j]) // 1 if left child, 0 if right
+		diff := api.Sub(circuit.BoundaryProof.ProofPath[j], zhConst)
+		api.AssertIsEqual(api.Mul(isLeftChild, diff), 0)
 	}
-	lowerRoot, err := circuit.BoundaryLower.ComputeRoot(api)
+
+	// Verify the proof path reconstructs the claimed root.
+	boundaryRoot, err := circuit.BoundaryProof.ComputeRoot(api)
 	if err != nil {
 		return err
 	}
-	api.AssertIsEqual(lowerRoot, circuit.RootHash)
-	// LeafHash != zeroLeafHash (non-zero diff)
-	api.AssertIsEqual(api.IsZero(api.Sub(circuit.BoundaryLower.LeafHash, zeroLeafConst)), 0)
-
-	// --- Upper boundary: leaf at index numLeaves must equal zero ---
-	// When isFull, index numLeaves = TotalLeaves doesn't exist in the tree.
-	// Use safeUpperIdx = 0 when isFull (produces valid 20-bit decomposition)
-	// and guard all assertions so they're trivially satisfied.
-	safeUpperIdx := api.Select(isFull, 0, circuit.NumLeaves)
-	upperBits := api.ToBinary(safeUpperIdx, MaxTreeDepth)
-	for j := 0; j < MaxTreeDepth; j++ {
-		diff := api.Sub(circuit.BoundaryUpper.Directions[j], upperBits[j])
-		api.AssertIsEqual(api.Mul(isNotFull, diff), 0)
-	}
-	upperRoot, err := circuit.BoundaryUpper.ComputeRoot(api)
-	if err != nil {
-		return err
-	}
-	// Root must match (guarded when isFull)
-	rootDiff := api.Sub(upperRoot, circuit.RootHash)
-	api.AssertIsEqual(api.Mul(isNotFull, rootDiff), 0)
-	// LeafHash must equal zeroLeafHash (guarded when isFull)
-	leafDiff := api.Sub(circuit.BoundaryUpper.LeafHash, zeroLeafConst)
-	api.AssertIsEqual(api.Mul(isNotFull, leafDiff), 0)
+	api.AssertIsEqual(boundaryRoot, circuit.RootHash)
 
 	// ---------------------------------------------------------------
 	// 4. Bounded comparator for leafIndex < numLeaves checks.
@@ -145,7 +141,7 @@ func (circuit *PoICircuit) Define(api frontend.API) error {
 		// Range check: leafIndex < numLeaves.
 		comparator.AssertIsLess(circuit.LeafIndices[k], circuit.NumLeaves)
 
-		// 5c. Compute domain-tagged leaf hash: H(1, bytes[k][0..527]).
+		// 5c. Compute domain-tagged leaf hash: H(1, bytes[k][0..528]).
 		leafHasher := hash.NewMerkleDamgardHasher(api, p, 0)
 		leafHasher.Write(frontend.Variable(crypto.DomainTagReal))
 		leafHasher.Write(circuit.Bytes[k][:]...)

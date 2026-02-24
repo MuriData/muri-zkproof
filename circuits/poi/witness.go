@@ -130,14 +130,8 @@ func PrepareWitness(secretKey, randomness *big.Int, chunks [][]byte, smt *merkle
 		assignment.MerkleProofs[k] = r.merkleProof
 	}
 
-	// Boundary proofs.
-	assignment.BoundaryLower = prepareBoundaryProof(smt, numLeaves-1)
-	if numLeaves < TotalLeaves {
-		assignment.BoundaryUpper = prepareBoundaryProof(smt, numLeaves)
-	} else {
-		// isFull: provide dummy upper boundary (all checks are guarded).
-		assignment.BoundaryUpper = dummyBoundaryProof(smt)
-	}
+	// Single boundary proof of last real leaf (numLeaves - 1).
+	assignment.BoundaryProof = prepareBoundaryProof(smt, numLeaves-1)
 
 	// Aggregate message and commitment.
 	aggMsg := crypto.DeriveAggMsg(leafHashes[:], randomness)
@@ -168,23 +162,6 @@ func prepareBoundaryProof(smt *merkle.SparseMerkleTree, leafIndex int) BoundaryM
 
 	return BoundaryMerkleProof{
 		LeafHash:   leafHash,
-		ProofPath:  proofPath,
-		Directions: proofDirections,
-	}
-}
-
-// dummyBoundaryProof returns a BoundaryMerkleProof with zero values.
-// Used when numLeaves == TotalLeaves and the upper boundary check is skipped.
-func dummyBoundaryProof(smt *merkle.SparseMerkleTree) BoundaryMerkleProof {
-	var proofPath [MaxTreeDepth]frontend.Variable
-	var proofDirections [MaxTreeDepth]frontend.Variable
-	for i := 0; i < MaxTreeDepth; i++ {
-		proofPath[i] = big.NewInt(0)
-		proofDirections[i] = 0
-	}
-
-	return BoundaryMerkleProof{
-		LeafHash:   big.NewInt(0),
 		ProofPath:  proofPath,
 		Directions: proofDirections,
 	}

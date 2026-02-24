@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 
+	"github.com/MuriData/muri-zkproof/circuits/fsp"
 	"github.com/MuriData/muri-zkproof/circuits/keyleak"
 	"github.com/MuriData/muri-zkproof/circuits/poi"
 	"github.com/MuriData/muri-zkproof/pkg/setup"
@@ -20,6 +21,7 @@ type CircuitEntry struct {
 // circuitRegistry maps circuit names to their entries.
 var circuitRegistry = map[string]CircuitEntry{
 	"poi":     {NewCircuit: func() frontend.Circuit { return &poi.PoICircuit{} }, Backend: setup.Groth16Backend},
+	"fsp":     {NewCircuit: func() frontend.Circuit { return &fsp.FSPCircuit{} }, Backend: setup.Groth16Backend},
 	"keyleak": {NewCircuit: func() frontend.Circuit { return &keyleak.KeyLeakCircuit{} }, Backend: setup.PlonkBackend},
 }
 
@@ -118,7 +120,7 @@ func printUsage() {
   go run ./cmd/compile <circuit> ceremony p2-contribute      Add a Phase 2 contribution
   go run ./cmd/compile <circuit> ceremony p2-verify HEX      Verify Phase 2, seal & export keys
 
-Available circuits: poi (Groth16), keyleak (PLONK)
+Available circuits: poi (Groth16), fsp (Groth16), keyleak (PLONK)
 
 Note: MPC ceremony is only available for Groth16 circuits.
       PLONK circuits use a universal SRS and only need "dev" setup.
