@@ -582,6 +582,25 @@ func LoadSparseMerkleTree(r io.Reader, zeroLeafHash *big.Int) (*SparseMerkleTree
 	}, nil
 }
 
+// VerifySparseMerkleProof verifies a Merkle proof using int directions (0/1)
+// as returned by SparseMerkleTree.GetProof.
+// direction 0 = current is left child (sibling on right).
+// direction 1 = current is right child (sibling on left).
+func VerifySparseMerkleProof(leafHash *big.Int, siblings []*big.Int, directions []int, rootHash *big.Int) bool {
+	if len(siblings) != len(directions) {
+		return false
+	}
+	current := leafHash
+	for i := 0; i < len(siblings); i++ {
+		if directions[i] == 1 {
+			current = HashNodes(siblings[i], current)
+		} else {
+			current = HashNodes(current, siblings[i])
+		}
+	}
+	return current.Cmp(rootHash) == 0
+}
+
 // sortInts sorts a slice of ints in ascending order (insertion sort,
 // suitable for the typically small per-level entry counts).
 func sortInts(s []int) {
