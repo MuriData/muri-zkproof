@@ -130,9 +130,6 @@ func PrepareWitness(secretKey, randomness *big.Int, chunks [][]byte, smt *merkle
 		assignment.MerkleProofs[k] = r.merkleProof
 	}
 
-	// Single boundary proof of last real leaf (numLeaves - 1).
-	assignment.BoundaryProof = prepareBoundaryProof(smt, numLeaves-1)
-
 	// Aggregate message and commitment.
 	aggMsg := crypto.DeriveAggMsg(leafHashes[:], randomness)
 	commitment := crypto.DeriveCommitment(secretKey, aggMsg, randomness, publicKey)
@@ -146,25 +143,6 @@ func PrepareWitness(secretKey, randomness *big.Int, chunks [][]byte, smt *merkle
 		Commitment:   commitment,
 		AggMsg:       aggMsg,
 	}, nil
-}
-
-// prepareBoundaryProof creates a BoundaryMerkleProof for a given leaf index.
-func prepareBoundaryProof(smt *merkle.SparseMerkleTree, leafIndex int) BoundaryMerkleProof {
-	siblings, directions := smt.GetProof(leafIndex)
-	leafHash := smt.GetLeafHash(leafIndex)
-
-	var proofPath [MaxTreeDepth]frontend.Variable
-	var proofDirections [MaxTreeDepth]frontend.Variable
-	for i := 0; i < MaxTreeDepth; i++ {
-		proofPath[i] = siblings[i]
-		proofDirections[i] = directions[i]
-	}
-
-	return BoundaryMerkleProof{
-		LeafHash:   leafHash,
-		ProofPath:  proofPath,
-		Directions: proofDirections,
-	}
 }
 
 // HashChunk hashes a single chunk using Poseidon2 with domain tag = 1

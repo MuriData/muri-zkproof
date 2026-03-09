@@ -5,7 +5,6 @@ import (
 
 	"github.com/MuriData/muri-zkproof/circuits/shared"
 	"github.com/MuriData/muri-zkproof/pkg/crypto"
-	"github.com/MuriData/muri-zkproof/pkg/merkle"
 	"github.com/consensys/gnark/frontend"
 	"github.com/consensys/gnark/std/math/bits"
 	"github.com/consensys/gnark/std/math/cmp"
@@ -15,37 +14,24 @@ import (
 // at package init. It is used as a circuit constant.
 var zeroLeafHash *big.Int
 
-// zeroSubtreeHashes[j] is the hash of an all-zero subtree of depth j.
-// zeroSubtreeHashes[0] = zeroLeafHash, zeroSubtreeHashes[j] = H(zh[j-1], zh[j-1]).
-// Used by the FSP-style sibling zero-checks on the boundary proof.
-var zeroSubtreeHashes [MaxTreeDepth]*big.Int
-
 func init() {
 	zeroLeafHash = crypto.ComputeZeroLeafHash(ElementSize, NumChunks)
-	zh := merkle.PrecomputeZeroHashes(MaxTreeDepth, zeroLeafHash)
-	for i := 0; i < MaxTreeDepth; i++ {
-		zeroSubtreeHashes[i] = zh[i]
-	}
 }
 
 type PoICircuit struct {
-	// Public inputs (4, unchanged)
+	// Public inputs (5): commitment, randomness, publicKey, rootHash, numLeaves
 	Commitment frontend.Variable `gnark:"commitment,public"`
 	Randomness frontend.Variable `gnark:"randomness,public"`
 	PublicKey  frontend.Variable `gnark:"publicKey,public"`
 	RootHash   frontend.Variable `gnark:"rootHash,public"`
+	NumLeaves  frontend.Variable `gnark:"numLeaves,public"`
 
 	// Private inputs
 	SecretKey    frontend.Variable                           `gnark:"secretKey"`
-	NumLeaves    frontend.Variable                           `gnark:"numLeaves"`
 	Bytes        [OpeningsCount][NumChunks]frontend.Variable `gnark:"bytes"`
 	MerkleProofs [OpeningsCount]MerkleProofCircuit           `gnark:"merkleProofs"`
 	Quotients    [OpeningsCount]frontend.Variable            `gnark:"quotients"`
 	LeafIndices  [OpeningsCount]frontend.Variable            `gnark:"leafIndices"`
-
-	// Boundary proof: single Merkle proof of leaf at numLeaves-1.
-	// Replaces the old two-proof approach with FSP-style sibling zero-checks.
-	BoundaryProof BoundaryMerkleProof `gnark:"boundaryProof"`
 }
 
 func (circuit *PoICircuit) Define(api frontend.API) error {
@@ -73,42 +59,10 @@ func (circuit *PoICircuit) Define(api frontend.API) error {
 	randBitsFull := api.ToBinary(circuit.Randomness, api.Compiler().FieldBitLen())
 
 	// ---------------------------------------------------------------
-	// 3. NumLeaves validation + FSP-style boundary proof.
-	//    Single Merkle proof of leaf[numLeaves-1] with sibling zero-checks.
+	// 3. NumLeaves validation (public input, verified on-chain via FSP).
+	//    Range check: numLeaves in [1, TotalLeaves].
 	// ---------------------------------------------------------------
-	// Range check: numLeaves in [1, TotalLeaves].
 	api.AssertIsEqual(api.IsZero(circuit.NumLeaves), 0)
-
-	lastIdx := api.Sub(circuit.NumLeaves, 1)
-	lastBits := api.ToBinary(lastIdx, MaxTreeDepth)
-
-	// Direction bits must match the binary decomposition of lastIdx.
-	for j := 0; j < MaxTreeDepth; j++ {
-		api.AssertIsEqual(circuit.BoundaryProof.Directions[j], lastBits[j])
-	}
-
-	// Leaf must be non-zero (real data, not padding).
-	zeroLeafConst := frontend.Variable(zeroLeafHash)
-	api.AssertIsEqual(api.IsZero(api.Sub(circuit.BoundaryProof.LeafHash, zeroLeafConst)), 0)
-
-	// Zero-sibling check: at each level where last is a left child
-	// (bit = 0), the sibling must equal the zero subtree hash for
-	// that level. This proves no real chunk exists beyond lastIdx.
-	// When numLeaves == TotalLeaves, all bits are 1 (right child at
-	// every level), so no zero-sibling checks are enforced.
-	for j := 0; j < MaxTreeDepth; j++ {
-		zhConst := frontend.Variable(zeroSubtreeHashes[j])
-		isLeftChild := api.Sub(1, lastBits[j]) // 1 if left child, 0 if right
-		diff := api.Sub(circuit.BoundaryProof.ProofPath[j], zhConst)
-		api.AssertIsEqual(api.Mul(isLeftChild, diff), 0)
-	}
-
-	// Verify the proof path reconstructs the claimed root.
-	boundaryRoot, err := circuit.BoundaryProof.ComputeRoot(api, sponge)
-	if err != nil {
-		return err
-	}
-	api.AssertIsEqual(boundaryRoot, circuit.RootHash)
 
 	// ---------------------------------------------------------------
 	// 4. Bounded comparator for leafIndex < numLeaves checks.

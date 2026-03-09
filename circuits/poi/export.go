@@ -23,6 +23,7 @@ type ProofFixture struct {
 	RootHash      string    `json:"root_hash"`
 	Commitment    string    `json:"commitment"`
 	PublicKey     string    `json:"public_key"`
+	NumLeaves     string    `json:"num_leaves"`
 }
 
 // ExportProofFixture generates a deterministic proof fixture for Solidity tests.
@@ -133,6 +134,7 @@ func ExportProofFixture(keysDir string) ([]byte, error) {
 		RootHash:   fmt.Sprintf("0x%064x", smt.Root),
 		Commitment: fmt.Sprintf("0x%064x", result.Commitment),
 		PublicKey:  fmt.Sprintf("0x%064x", result.PublicKey),
+		NumLeaves:  fmt.Sprintf("0x%064x", big.NewInt(int64(result.NumLeaves))),
 	}
 	for i := 0; i < 8; i++ {
 		fixture.SolidityProof[i] = fmt.Sprintf("0x%064x", solidityProof[i])
@@ -153,6 +155,7 @@ func ExportProofFixture(keysDir string) ([]byte, error) {
 	fmt.Printf("    uint256 constant ZK_FILE_ROOT = %s;\n", fixture.RootHash)
 	fmt.Printf("    bytes32 constant ZK_COMMITMENT = bytes32(%s);\n", fixture.Commitment)
 	fmt.Printf("    uint256 constant ZK_PUB_KEY = %s;\n", fixture.PublicKey)
+	fmt.Printf("    uint256 constant ZK_NUM_LEAVES = %s;\n", fixture.NumLeaves)
 	fmt.Println()
 	fmt.Printf("    // Proof (uint256[8])\n")
 	for i := 0; i < 8; i++ {
@@ -168,7 +171,7 @@ func ExportProofFixture(keysDir string) ([]byte, error) {
 
 	// Public witness info
 	fmt.Println("\n=== PUBLIC WITNESS ORDER ===")
-	fmt.Println("In gnark circuit (= Solidity order): [commitment, randomness, publicKey, rootHash]")
+	fmt.Println("In gnark circuit (= Solidity order): [commitment, randomness, publicKey, rootHash, numLeaves]")
 	var pubWitBuf bytes.Buffer
 	_, err = publicWitness.WriteTo(&pubWitBuf)
 	if err != nil {
@@ -181,6 +184,7 @@ func ExportProofFixture(keysDir string) ([]byte, error) {
 	fmt.Println("  [1] randomness")
 	fmt.Println("  [2] publicKey")
 	fmt.Println("  [3] rootHash")
+	fmt.Println("  [4] numLeaves")
 	fmt.Println("\nMake sure Market.sol's publicInputs array matches this order!")
 
 	return jsonOut, nil

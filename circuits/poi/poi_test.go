@@ -197,6 +197,9 @@ func TestPoIExportFixture(t *testing.T) {
 	if fixture.PublicKey == "" {
 		t.Fatal("fixture public key is empty")
 	}
+	if fixture.NumLeaves == "" {
+		t.Fatal("fixture num_leaves is empty")
+	}
 	for i, p := range fixture.SolidityProof {
 		if p == "" {
 			t.Fatalf("fixture solidity proof[%d] is empty", i)
