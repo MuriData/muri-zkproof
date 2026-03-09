@@ -116,6 +116,23 @@ func generateFSPProofJS(_ js.Value, args []js.Value) any {
 				return
 			}
 
+			// Optional 4th argument: progress callback function.
+			var onProgress js.Value
+			if len(args) >= 4 && args[3].Type() == js.TypeFunction {
+				onProgress = args[3]
+			}
+			reportProgress := func(stage string, extra map[string]any) {
+				if onProgress.IsUndefined() {
+					return
+				}
+				obj := js.Global().Get("Object").New()
+				obj.Set("stage", stage)
+				for k, v := range extra {
+					obj.Set(k, v)
+				}
+				onProgress.Invoke(obj)
+			}
+
 			fileBytes := jsUint8ArrayToBytes(args[0])
 			pkBytes := jsUint8ArrayToBytes(args[1])
 			vkBytes := jsUint8ArrayToBytes(args[2])
@@ -143,6 +160,11 @@ func generateFSPProofJS(_ js.Value, args []js.Value) any {
 
 			// 4. Build SMT + prepare witness
 			smt := buildSMT(fileBytes)
+
+			reportProgress("root", map[string]any{
+				"root":      smt.Root.Text(10),
+				"numChunks": smt.NumLeaves,
+			})
 
 			witnessResult, err := fsp.PrepareWitness(smt)
 			if err != nil {
