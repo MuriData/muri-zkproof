@@ -7,6 +7,7 @@ import (
 	"io"
 	"math/big"
 	"runtime"
+	"strconv"
 	"sync"
 
 	"github.com/MuriData/muri-zkproof/pkg/crypto"
@@ -89,6 +90,27 @@ func HashNodes(left, right *big.Int) *big.Int {
 	out := new(big.Int)
 	result.BigInt(out)
 	return out
+}
+
+func maxLeavesForDepth(depth int) (int, error) {
+	if depth < 0 {
+		return 0, fmt.Errorf("tree depth must be non-negative")
+	}
+	if depth >= strconv.IntSize-1 {
+		return 0, fmt.Errorf("tree depth %d is too large", depth)
+	}
+	return 1 << depth, nil
+}
+
+func validateLeafCapacity(depth, numLeaves int) error {
+	maxLeaves, err := maxLeavesForDepth(depth)
+	if err != nil {
+		return err
+	}
+	if numLeaves > maxLeaves {
+		return fmt.Errorf("tree depth %d supports at most %d leaves, got %d", depth, maxLeaves, numLeaves)
+	}
+	return nil
 }
 
 // GenerateMerkleTree builds a Merkle tree from pre-split chunks.
@@ -315,7 +337,7 @@ func padToPowerOfTwo(chunks [][]byte) [][]byte {
 type SparseMerkleTree struct {
 	Root       *big.Int
 	Depth      int
-	NumLeaves  int               // actual number of real leaves
+	NumLeaves  int                // actual number of real leaves
 	Levels     []map[int]*big.Int // levels[0] = leaves, levels[depth] has the root
 	ZeroHashes []*big.Int         // zeroHashes[i] = hash of an all-zero subtree at level i
 }
@@ -341,8 +363,11 @@ func PrecomputeZeroHashes(depth int, zeroLeafHash *big.Int) []*big.Int {
 //
 // hashLeaf hashes a single chunk to produce the leaf value.
 // zeroLeafHash is the domain-separated hash for padding leaves.
-func GenerateSparseMerkleTree(chunks [][]byte, depth int, hashLeaf HashFunc, zeroLeafHash *big.Int) *SparseMerkleTree {
+func GenerateSparseMerkleTree(chunks [][]byte, depth int, hashLeaf HashFunc, zeroLeafHash *big.Int) (*SparseMerkleTree, error) {
 	numLeaves := len(chunks)
+	if err := validateLeafCapacity(depth, numLeaves); err != nil {
+		return nil, err
+	}
 	if numLeaves == 0 {
 		numLeaves = 0 // empty tree is valid (root = zeroHashes[depth])
 	}
@@ -422,14 +447,17 @@ func GenerateSparseMerkleTree(chunks [][]byte, depth int, hashLeaf HashFunc, zer
 		NumLeaves:  len(chunks),
 		Levels:     levels,
 		ZeroHashes: zeroHashes,
-	}
+	}, nil
 }
 
 // BuildSMTFromLeafHashes constructs a sparse Merkle tree from pre-computed leaf
 // hashes. This allows leaf hashing to be parallelized externally (e.g. across
 // multiple WASM workers) while the tree assembly happens in a single goroutine.
-func BuildSMTFromLeafHashes(leafHashes []*big.Int, depth int, zeroLeafHash *big.Int) *SparseMerkleTree {
+func BuildSMTFromLeafHashes(leafHashes []*big.Int, depth int, zeroLeafHash *big.Int) (*SparseMerkleTree, error) {
 	numLeaves := len(leafHashes)
+	if err := validateLeafCapacity(depth, numLeaves); err != nil {
+		return nil, err
+	}
 	zeroHashes := PrecomputeZeroHashes(depth, zeroLeafHash)
 
 	levels := make([]map[int]*big.Int, depth+1)
@@ -475,7 +503,7 @@ func BuildSMTFromLeafHashes(leafHashes []*big.Int, depth int, zeroLeafHash *big.
 		NumLeaves:  numLeaves,
 		Levels:     levels,
 		ZeroHashes: zeroHashes,
-	}
+	}, nil
 }
 
 // GetProof returns a fixed-size Merkle proof for the leaf at the given index.

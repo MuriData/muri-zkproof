@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"math/big"
+	"strings"
 	"testing"
 
 	"github.com/MuriData/muri-zkproof/pkg/crypto"
@@ -81,7 +82,10 @@ func TestSparseMerkleParallel(t *testing.T) {
 			zeroLeaf := testZeroLeafHash()
 
 			// Build SMT (uses parallel hashing internally).
-			smt := GenerateSparseMerkleTree(chunks, testMaxDepth, testHashChunk, zeroLeaf)
+			smt, err := GenerateSparseMerkleTree(chunks, testMaxDepth, testHashChunk, zeroLeaf)
+			if err != nil {
+				t.Fatalf("build SMT: %v", err)
+			}
 
 			// Recompute root sequentially for comparison.
 			seqLeafHashes := make([]*big.Int, len(chunks))
@@ -126,7 +130,10 @@ func TestSMTSaveLoad(t *testing.T) {
 			chunks := SplitIntoChunks(data, testChunkSize)
 			zeroLeaf := testZeroLeafHash()
 
-			original := GenerateSparseMerkleTree(chunks, testMaxDepth, testHashChunk, zeroLeaf)
+			original, err := GenerateSparseMerkleTree(chunks, testMaxDepth, testHashChunk, zeroLeaf)
+			if err != nil {
+				t.Fatalf("build SMT: %v", err)
+			}
 
 			// Serialize.
 			var buf bytes.Buffer
@@ -191,7 +198,10 @@ func TestSMTSaveLoad(t *testing.T) {
 // TestSMTSaveLoadEmpty verifies Save/Load handles an empty tree.
 func TestSMTSaveLoadEmpty(t *testing.T) {
 	zeroLeaf := testZeroLeafHash()
-	original := GenerateSparseMerkleTree(nil, testMaxDepth, testHashChunk, zeroLeaf)
+	original, err := GenerateSparseMerkleTree(nil, testMaxDepth, testHashChunk, zeroLeaf)
+	if err != nil {
+		t.Fatalf("build SMT: %v", err)
+	}
 
 	var buf bytes.Buffer
 	if err := original.Save(&buf); err != nil {
@@ -211,6 +221,34 @@ func TestSMTSaveLoadEmpty(t *testing.T) {
 	}
 }
 
+func TestGenerateSparseMerkleTreeRejectsTooManyLeaves(t *testing.T) {
+	chunks := [][]byte{
+		make([]byte, testChunkSize),
+		make([]byte, testChunkSize),
+		make([]byte, testChunkSize),
+	}
+
+	_, err := GenerateSparseMerkleTree(chunks, 1, testHashChunk, testZeroLeafHash())
+	if err == nil {
+		t.Fatal("expected oversized tree error")
+	}
+	if !strings.Contains(err.Error(), "supports at most 2 leaves") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestBuildSMTFromLeafHashesRejectsTooManyLeaves(t *testing.T) {
+	leafHashes := []*big.Int{big.NewInt(1), big.NewInt(2), big.NewInt(3)}
+
+	_, err := BuildSMTFromLeafHashes(leafHashes, 1, testZeroLeafHash())
+	if err == nil {
+		t.Fatal("expected oversized tree error")
+	}
+	if !strings.Contains(err.Error(), "supports at most 2 leaves") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func BenchmarkSMTConstruction(b *testing.B) {
 	// 8 chunks ≈ 128 KB (same as the standard PoI test).
 	data := make([]byte, 8*testChunkSize)
@@ -222,7 +260,9 @@ func BenchmarkSMTConstruction(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		GenerateSparseMerkleTree(chunks, testMaxDepth, testHashChunk, zeroLeaf)
+		if _, err := GenerateSparseMerkleTree(chunks, testMaxDepth, testHashChunk, zeroLeaf); err != nil {
+			b.Fatalf("build SMT: %v", err)
+		}
 	}
 }
 
@@ -233,7 +273,10 @@ func BenchmarkSMTSaveLoad(b *testing.B) {
 	}
 	chunks := SplitIntoChunks(data, testChunkSize)
 	zeroLeaf := testZeroLeafHash()
-	smt := GenerateSparseMerkleTree(chunks, testMaxDepth, testHashChunk, zeroLeaf)
+	smt, err := GenerateSparseMerkleTree(chunks, testMaxDepth, testHashChunk, zeroLeaf)
+	if err != nil {
+		b.Fatalf("build SMT: %v", err)
+	}
 
 	b.Run("Save", func(b *testing.B) {
 		for i := 0; i < b.N; i++ {
@@ -282,7 +325,10 @@ func TestCheckpointedRebuildProof(t *testing.T) {
 				chunks := SplitIntoChunks(data, testChunkSize)
 				zeroLeaf := testZeroLeafHash()
 
-				fullSMT := GenerateSparseMerkleTree(chunks, testMaxDepth, testHashChunk, zeroLeaf)
+				fullSMT, err := GenerateSparseMerkleTree(chunks, testMaxDepth, testHashChunk, zeroLeaf)
+				if err != nil {
+					t.Fatalf("build SMT: %v", err)
+				}
 
 				// Save as checkpointed, load back.
 				var buf bytes.Buffer
@@ -337,7 +383,10 @@ func TestCheckpointedSaveLoad(t *testing.T) {
 	}
 	chunks := SplitIntoChunks(data, testChunkSize)
 	zeroLeaf := testZeroLeafHash()
-	fullSMT := GenerateSparseMerkleTree(chunks, testMaxDepth, testHashChunk, zeroLeaf)
+	fullSMT, err := GenerateSparseMerkleTree(chunks, testMaxDepth, testHashChunk, zeroLeaf)
+	if err != nil {
+		t.Fatalf("build SMT: %v", err)
+	}
 
 	for _, scheme := range []struct {
 		name string
@@ -402,7 +451,10 @@ func TestCheckpointedPaddingLeaf(t *testing.T) {
 	chunks := SplitIntoChunks(data, testChunkSize)
 	zeroLeaf := testZeroLeafHash()
 
-	fullSMT := GenerateSparseMerkleTree(chunks, testMaxDepth, testHashChunk, zeroLeaf)
+	fullSMT, err := GenerateSparseMerkleTree(chunks, testMaxDepth, testHashChunk, zeroLeaf)
+	if err != nil {
+		t.Fatalf("build SMT: %v", err)
+	}
 	var buf bytes.Buffer
 	if err := fullSMT.SaveCheckpointed(&buf, SchemeBalanced); err != nil {
 		t.Fatalf("save: %v", err)
@@ -448,7 +500,10 @@ func TestCheckpointedSchemeLeavesOnly(t *testing.T) {
 	chunks := SplitIntoChunks(data, testChunkSize)
 	zeroLeaf := testZeroLeafHash()
 
-	fullSMT := GenerateSparseMerkleTree(chunks, testMaxDepth, testHashChunk, zeroLeaf)
+	fullSMT, err := GenerateSparseMerkleTree(chunks, testMaxDepth, testHashChunk, zeroLeaf)
+	if err != nil {
+		t.Fatalf("build SMT: %v", err)
+	}
 
 	var buf bytes.Buffer
 	if err := fullSMT.SaveCheckpointed(&buf, leavesOnly); err != nil {
@@ -485,7 +540,10 @@ func TestCheckpointedSchemeLeavesOnly(t *testing.T) {
 // TestCheckpointedEmpty verifies the checkpoint system handles empty trees.
 func TestCheckpointedEmpty(t *testing.T) {
 	zeroLeaf := testZeroLeafHash()
-	fullSMT := GenerateSparseMerkleTree(nil, testMaxDepth, testHashChunk, zeroLeaf)
+	fullSMT, err := GenerateSparseMerkleTree(nil, testMaxDepth, testHashChunk, zeroLeaf)
+	if err != nil {
+		t.Fatalf("build SMT: %v", err)
+	}
 
 	var buf bytes.Buffer
 	if err := fullSMT.SaveCheckpointed(&buf, SchemeBalanced); err != nil {
@@ -508,7 +566,10 @@ func BenchmarkCheckpointedRebuildProof(b *testing.B) {
 	}
 	chunks := SplitIntoChunks(data, testChunkSize)
 	zeroLeaf := testZeroLeafHash()
-	fullSMT := GenerateSparseMerkleTree(chunks, testMaxDepth, testHashChunk, zeroLeaf)
+	fullSMT, err := GenerateSparseMerkleTree(chunks, testMaxDepth, testHashChunk, zeroLeaf)
+	if err != nil {
+		b.Fatalf("build SMT: %v", err)
+	}
 
 	readChunk := func(i int) []byte { return chunks[i] }
 
@@ -539,7 +600,10 @@ func BenchmarkCheckpointedSaveLoad(b *testing.B) {
 	}
 	chunks := SplitIntoChunks(data, testChunkSize)
 	zeroLeaf := testZeroLeafHash()
-	fullSMT := GenerateSparseMerkleTree(chunks, testMaxDepth, testHashChunk, zeroLeaf)
+	fullSMT, err := GenerateSparseMerkleTree(chunks, testMaxDepth, testHashChunk, zeroLeaf)
+	if err != nil {
+		b.Fatalf("build SMT: %v", err)
+	}
 
 	for _, scheme := range []struct {
 		name string

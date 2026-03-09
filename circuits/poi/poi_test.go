@@ -4,6 +4,8 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"math/big"
+	"strings"
 	"testing"
 
 	"github.com/MuriData/muri-zkproof/circuits/poi"
@@ -18,10 +20,14 @@ import (
 
 // buildSMT is a test helper that splits data into chunks and builds a
 // sparse Merkle tree with domain-separated leaf hashing.
-func buildSMT(data []byte) (*merkle.SparseMerkleTree, [][]byte) {
+func buildSMT(t *testing.T, data []byte) (*merkle.SparseMerkleTree, [][]byte) {
+	t.Helper()
 	chunks := merkle.SplitIntoChunks(data, poi.FileSize)
 	zeroLeaf := crypto.ComputeZeroLeafHash(poi.ElementSize, poi.NumChunks)
-	smt := merkle.GenerateSparseMerkleTree(chunks, poi.MaxTreeDepth, poi.HashChunk, zeroLeaf)
+	smt, err := merkle.GenerateSparseMerkleTree(chunks, poi.MaxTreeDepth, poi.HashChunk, zeroLeaf)
+	if err != nil {
+		t.Fatalf("build SMT: %v", err)
+	}
 	return smt, chunks
 }
 
@@ -73,7 +79,7 @@ func TestPoICircuitEndToEnd(t *testing.T) {
 	if _, err := rand.Read(wholeFileData); err != nil {
 		t.Fatalf("generate random data: %v", err)
 	}
-	smt, chunks := buildSMT(wholeFileData)
+	smt, chunks := buildSMT(t, wholeFileData)
 	t.Logf("Generated %d bytes of random data (%d chunks)", testFileSize, smt.NumLeaves)
 	t.Logf("Merkle root: 0x%x", smt.Root.Bytes())
 
@@ -129,7 +135,7 @@ func TestPoIMultipleFileSizes(t *testing.T) {
 			if _, err := rand.Read(wholeFileData); err != nil {
 				t.Fatalf("generate random data: %v", err)
 			}
-			smt, chunks := buildSMT(wholeFileData)
+			smt, chunks := buildSMT(t, wholeFileData)
 			t.Logf("Chunks: %d, NumLeaves: %d", len(chunks), smt.NumLeaves)
 
 			randomness, err := rand.Int(rand.Reader, ecc.BN254.ScalarField())
@@ -216,4 +222,57 @@ func TestPoIExportFixture(t *testing.T) {
 	}
 
 	fmt.Println("Fixture round-trip OK")
+}
+
+func TestPrepareWitnessRejectsNumLeavesAboveCapacity(t *testing.T) {
+	secretKey, err := crypto.GenerateSecretKey()
+	if err != nil {
+		t.Fatalf("generate secret key: %v", err)
+	}
+
+	_, err = poi.PrepareWitness(secretKey, big.NewInt(1), [][]byte{{}}, &merkle.SparseMerkleTree{
+		NumLeaves: poi.TotalLeaves + 1,
+	})
+	if err == nil {
+		t.Fatal("expected numLeaves capacity error")
+	}
+	if !strings.Contains(err.Error(), "exceeds circuit capacity") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestPoICircuitRejectsNumLeavesAboveCapacity(t *testing.T) {
+	wholeFileData := make([]byte, 8*poi.FileSize)
+	if _, err := rand.Read(wholeFileData); err != nil {
+		t.Fatalf("generate random data: %v", err)
+	}
+	smt, chunks := buildSMT(t, wholeFileData)
+
+	randomness, err := rand.Int(rand.Reader, ecc.BN254.ScalarField())
+	if err != nil {
+		t.Fatalf("generate randomness: %v", err)
+	}
+	secretKey, err := crypto.GenerateSecretKey()
+	if err != nil {
+		t.Fatalf("generate secret key: %v", err)
+	}
+
+	result, err := poi.PrepareWitness(secretKey, randomness, chunks, smt)
+	if err != nil {
+		t.Fatalf("prepare witness: %v", err)
+	}
+
+	result.Assignment.NumLeaves = poi.TotalLeaves + 1
+	ccs, err := setup.CompileCircuit(&poi.PoICircuit{})
+	if err != nil {
+		t.Fatalf("compile circuit: %v", err)
+	}
+	witness, err := frontend.NewWitness(&result.Assignment, ecc.BN254.ScalarField())
+	if err != nil {
+		t.Fatalf("create witness: %v", err)
+	}
+	err = ccs.IsSolved(witness)
+	if err == nil {
+		t.Fatal("expected circuit to reject oversized numLeaves")
+	}
 }

@@ -54,7 +54,7 @@ func hashChunk(chunk []byte) *big.Int {
 }
 
 // buildSMT splits file bytes into chunks and builds the sparse Merkle tree.
-func buildSMT(fileBytes []byte) *merkle.SparseMerkleTree {
+func buildSMT(fileBytes []byte) (*merkle.SparseMerkleTree, error) {
 	chunks := merkle.SplitIntoChunks(fileBytes, fileSize)
 	return merkle.GenerateSparseMerkleTree(chunks, maxTreeDepth, hashChunk, zeroLeafHash)
 }
@@ -205,7 +205,11 @@ func computeFileRootJS(_ js.Value, args []js.Value) any {
 			}
 
 			fileBytes := jsUint8ArrayToBytes(args[0])
-			smt := buildSMT(fileBytes)
+			smt, err := buildSMT(fileBytes)
+			if err != nil {
+				reject.Invoke(err.Error())
+				return
+			}
 
 			result := js.Global().Get("Object").New()
 			result.Set("root", smt.Root.Text(10))
@@ -243,7 +247,11 @@ func generateFSPProofJS(_ js.Value, args []js.Value) any {
 			pkBytes := jsUint8ArrayToBytes(args[1])
 			vkBytes := jsUint8ArrayToBytes(args[2])
 
-			smt := buildSMT(fileBytes)
+			smt, err := buildSMT(fileBytes)
+			if err != nil {
+				reject.Invoke(err.Error())
+				return
+			}
 
 			reportProgress("root", map[string]any{
 				"root":      smt.Root.Text(10),
@@ -331,7 +339,11 @@ func computeRootFromHashesJS(_ js.Value, args []js.Value) any {
 			numLeaves := args[1].Int()
 			leafHashes := deserializeLeafHashes(hashBytes)
 
-			smt := merkle.BuildSMTFromLeafHashes(leafHashes, maxTreeDepth, zeroLeafHash)
+			smt, err := merkle.BuildSMTFromLeafHashes(leafHashes, maxTreeDepth, zeroLeafHash)
+			if err != nil {
+				reject.Invoke(err.Error())
+				return
+			}
 
 			result := js.Global().Get("Object").New()
 			result.Set("root", smt.Root.Text(10))
@@ -373,7 +385,11 @@ func generateFSPProofFromHashesJS(_ js.Value, args []js.Value) any {
 			leafHashes := deserializeLeafHashes(hashBytes)
 			_ = numLeaves // numLeaves used for the result; tree uses len(leafHashes)
 
-			smt := merkle.BuildSMTFromLeafHashes(leafHashes, maxTreeDepth, zeroLeafHash)
+			smt, err := merkle.BuildSMTFromLeafHashes(leafHashes, maxTreeDepth, zeroLeafHash)
+			if err != nil {
+				reject.Invoke(err.Error())
+				return
+			}
 
 			reportProgress("root", map[string]any{
 				"root":      smt.Root.Text(10),

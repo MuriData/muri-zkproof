@@ -18,10 +18,14 @@ import (
 
 // buildSMT is a test helper that splits data into chunks and builds a
 // sparse Merkle tree with domain-separated leaf hashing.
-func buildSMT(data []byte) (*merkle.SparseMerkleTree, [][]byte) {
+func buildSMT(t *testing.T, data []byte) (*merkle.SparseMerkleTree, [][]byte) {
+	t.Helper()
 	chunks := merkle.SplitIntoChunks(data, fsp.FileSize)
 	zeroLeaf := crypto.ComputeZeroLeafHash(fsp.ElementSize, fsp.NumChunks)
-	smt := merkle.GenerateSparseMerkleTree(chunks, fsp.MaxTreeDepth, fsp.HashChunk, zeroLeaf)
+	smt, err := merkle.GenerateSparseMerkleTree(chunks, fsp.MaxTreeDepth, fsp.HashChunk, zeroLeaf)
+	if err != nil {
+		t.Fatalf("build SMT: %v", err)
+	}
 	return smt, chunks
 }
 
@@ -72,7 +76,7 @@ func TestFSPCircuitEndToEnd(t *testing.T) {
 	if _, err := rand.Read(wholeFileData); err != nil {
 		t.Fatalf("generate random data: %v", err)
 	}
-	smt, _ := buildSMT(wholeFileData)
+	smt, _ := buildSMT(t, wholeFileData)
 	t.Logf("Generated %d bytes of random data (%d chunks)", testFileSize, smt.NumLeaves)
 	t.Logf("Merkle root: 0x%x", smt.Root.Bytes())
 
@@ -117,7 +121,7 @@ func TestFSPMultipleFileSizes(t *testing.T) {
 			if _, err := rand.Read(wholeFileData); err != nil {
 				t.Fatalf("generate random data: %v", err)
 			}
-			smt, _ := buildSMT(wholeFileData)
+			smt, _ := buildSMT(t, wholeFileData)
 			t.Logf("Chunks: %d, NumLeaves: %d", fs.chunkCount, smt.NumLeaves)
 
 			result, err := fsp.PrepareWitness(smt)

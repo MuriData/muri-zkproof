@@ -63,6 +63,7 @@ func (circuit *PoICircuit) Define(api frontend.API) error {
 	//    Range check: numLeaves in [1, TotalLeaves].
 	// ---------------------------------------------------------------
 	api.AssertIsEqual(api.IsZero(circuit.NumLeaves), 0)
+	api.AssertIsLessOrEqual(circuit.NumLeaves, TotalLeaves)
 
 	// ---------------------------------------------------------------
 	// 4. Bounded comparator for leafIndex < numLeaves checks.

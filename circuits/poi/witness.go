@@ -31,6 +31,9 @@ func PrepareWitness(secretKey, randomness *big.Int, chunks [][]byte, smt *merkle
 	if smt.NumLeaves == 0 {
 		return nil, fmt.Errorf("sparse merkle tree has no leaves")
 	}
+	if smt.NumLeaves > TotalLeaves {
+		return nil, fmt.Errorf("numLeaves %d exceeds circuit capacity %d", smt.NumLeaves, TotalLeaves)
+	}
 	if len(chunks) == 0 {
 		return nil, fmt.Errorf("no chunks provided")
 	}
