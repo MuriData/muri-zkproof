@@ -62,8 +62,8 @@ func DevSetup(circuit frontend.Circuit, outputDir, circuitName string) error {
 	return ExportKeys(pk, vk, outputDir, circuitName)
 }
 
-// ExportKeys writes the proving key, verifying key, and Solidity verifier to outputDir.
-// Files are named: <circuitName>_prover.key, <circuitName>_verifier.key, <circuitName>_verifier.sol
+// ExportKeys writes the proving key, verifying key, Solidity verifier, and VK constants to outputDir.
+// Files: <circuitName>_prover.key, <circuitName>_verifier.key, <circuitName>_verifier.sol, <circuitName>_vk.sol
 func ExportKeys(pk groth16.ProvingKey, vk groth16.VerifyingKey, outputDir, circuitName string) error {
 	if err := os.MkdirAll(outputDir, 0o755); err != nil {
 		return fmt.Errorf("create output dir: %w", err)
@@ -80,13 +80,25 @@ func ExportKeys(pk groth16.ProvingKey, vk groth16.VerifyingKey, outputDir, circu
 	}
 	f.Close()
 
+	// Export VK constants as a standalone Solidity library (for precompile usage)
+	vkSolPath := filepath.Join(outputDir, circuitName+"_vk.sol")
+	vkSolFile, err := os.Create(vkSolPath)
+	if err != nil {
+		return fmt.Errorf("create VK solidity: %w", err)
+	}
+	if err := ExportGroth16VKSolidity(vk, vkSolFile, circuitName); err != nil {
+		vkSolFile.Close()
+		return fmt.Errorf("export VK solidity: %w", err)
+	}
+	vkSolFile.Close()
+
 	vkPath := filepath.Join(outputDir, circuitName+"_verifier.key")
 	saveObject(vkPath, vk)
 
 	pkPath := filepath.Join(outputDir, circuitName+"_prover.key")
 	saveObject(pkPath, pk)
 
-	fmt.Printf("Exported: %s, %s, %s\n", pkPath, vkPath, solPath)
+	fmt.Printf("Exported: %s, %s, %s, %s\n", pkPath, vkPath, solPath, vkSolPath)
 	return nil
 }
 
@@ -166,7 +178,8 @@ func PlonkDevSetup(circuit frontend.Circuit, outputDir, circuitName string) erro
 	return ExportPlonkKeys(pk, vk, outputDir, circuitName)
 }
 
-// ExportPlonkKeys writes PLONK proving key, verifying key, and Solidity verifier to outputDir.
+// ExportPlonkKeys writes PLONK proving key, verifying key, Solidity verifier, and VK constants to outputDir.
+// Files: <circuitName>_prover.key, <circuitName>_verifier.key, <circuitName>_verifier.sol, <circuitName>_vk.sol
 func ExportPlonkKeys(pk plonk.ProvingKey, vk plonk.VerifyingKey, outputDir, circuitName string) error {
 	if err := os.MkdirAll(outputDir, 0o755); err != nil {
 		return fmt.Errorf("create output dir: %w", err)
@@ -183,13 +196,25 @@ func ExportPlonkKeys(pk plonk.ProvingKey, vk plonk.VerifyingKey, outputDir, circ
 	}
 	f.Close()
 
+	// Export VK constants as a standalone Solidity library (for precompile usage)
+	vkSolPath := filepath.Join(outputDir, circuitName+"_vk.sol")
+	vkSolFile, err := os.Create(vkSolPath)
+	if err != nil {
+		return fmt.Errorf("create VK solidity: %w", err)
+	}
+	if err := ExportPlonkVKSolidity(vk, vkSolFile, circuitName); err != nil {
+		vkSolFile.Close()
+		return fmt.Errorf("export VK solidity: %w", err)
+	}
+	vkSolFile.Close()
+
 	vkPath := filepath.Join(outputDir, circuitName+"_verifier.key")
 	saveObject(vkPath, vk)
 
 	pkPath := filepath.Join(outputDir, circuitName+"_prover.key")
 	saveObject(pkPath, pk)
 
-	fmt.Printf("Exported: %s, %s, %s\n", pkPath, vkPath, solPath)
+	fmt.Printf("Exported: %s, %s, %s, %s\n", pkPath, vkPath, solPath, vkSolPath)
 	return nil
 }
 
