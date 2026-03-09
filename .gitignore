@@ -25,3 +25,4 @@ go.work
 *_verifier.key
 *_verifier.sol
 proof_fixture.json
+*_vk.sol
