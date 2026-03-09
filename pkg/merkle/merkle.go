@@ -431,6 +431,59 @@ func GenerateSparseMerkleTree(chunks [][]byte, depth int, hashLeaf HashFunc, zer
 	}
 }
 
+// BuildSMTFromLeafHashes constructs a sparse Merkle tree from pre-computed leaf
+// hashes. This allows leaf hashing to be parallelized externally (e.g. across
+// multiple WASM workers) while the tree assembly happens in a single goroutine.
+func BuildSMTFromLeafHashes(leafHashes []*big.Int, depth int, zeroLeafHash *big.Int) *SparseMerkleTree {
+	numLeaves := len(leafHashes)
+	zeroHashes := PrecomputeZeroHashes(depth, zeroLeafHash)
+
+	levels := make([]map[int]*big.Int, depth+1)
+	for i := range levels {
+		levels[i] = make(map[int]*big.Int)
+	}
+
+	for i, h := range leafHashes {
+		levels[0][i] = h
+	}
+
+	// Build bottom-up — same logic as GenerateSparseMerkleTree.
+	for lvl := 0; lvl < depth; lvl++ {
+		parentIndices := make(map[int]bool)
+		for idx := range levels[lvl] {
+			parentIndices[idx/2] = true
+		}
+		for parentIdx := range parentIndices {
+			leftIdx := parentIdx * 2
+			rightIdx := parentIdx*2 + 1
+
+			left, ok := levels[lvl][leftIdx]
+			if !ok {
+				left = zeroHashes[lvl]
+			}
+			right, ok := levels[lvl][rightIdx]
+			if !ok {
+				right = zeroHashes[lvl]
+			}
+
+			levels[lvl+1][parentIdx] = HashNodes(left, right)
+		}
+	}
+
+	root, ok := levels[depth][0]
+	if !ok {
+		root = zeroHashes[depth]
+	}
+
+	return &SparseMerkleTree{
+		Root:       root,
+		Depth:      depth,
+		NumLeaves:  numLeaves,
+		Levels:     levels,
+		ZeroHashes: zeroHashes,
+	}
+}
+
 // GetProof returns a fixed-size Merkle proof for the leaf at the given index.
 // The proof has exactly smt.Depth elements. siblings[i] is the sibling hash at
 // level i, and directions[i] is the circuit-format direction:
