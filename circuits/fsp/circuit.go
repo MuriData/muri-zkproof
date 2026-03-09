@@ -3,6 +3,7 @@ package fsp
 import (
 	"math/big"
 
+	"github.com/MuriData/muri-zkproof/circuits/shared"
 	"github.com/MuriData/muri-zkproof/pkg/crypto"
 	"github.com/MuriData/muri-zkproof/pkg/merkle"
 	"github.com/consensys/gnark/frontend"
@@ -43,6 +44,11 @@ type FSPCircuit struct {
 }
 
 func (circuit *FSPCircuit) Define(api frontend.API) error {
+	sponge, err := shared.NewSpongeHasher(api)
+	if err != nil {
+		return err
+	}
+
 	// ---------------------------------------------------------------
 	// 1. Range check: numChunks in [1, TotalLeaves].
 	//    ToBinary(numChunks - 1, MaxTreeDepth) constrains
@@ -81,7 +87,7 @@ func (circuit *FSPCircuit) Define(api frontend.API) error {
 	// ---------------------------------------------------------------
 	// 5. Verify the proof path reconstructs the claimed root.
 	// ---------------------------------------------------------------
-	root, err := circuit.Proof.ComputeRoot(api)
+	root, err := circuit.Proof.ComputeRoot(api, sponge)
 	if err != nil {
 		return err
 	}

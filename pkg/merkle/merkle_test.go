@@ -6,8 +6,8 @@ import (
 	"math/big"
 	"testing"
 
+	"github.com/MuriData/muri-zkproof/pkg/crypto"
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr"
-	"github.com/consensys/gnark-crypto/ecc/bn254/fr/poseidon2"
 )
 
 const (
@@ -17,21 +17,15 @@ const (
 )
 
 // testHashChunk is a deterministic leaf hash function for testing.
+// Uses Poseidon2 sponge with DomainTagReal and randomness = 1.
 func testHashChunk(chunk []byte) *big.Int {
-	h := poseidon2.NewMerkleDamgardHasher()
+	const numElems = 528
 
-	// Domain tag = 1 (real leaf)
-	var tagFr fr.Element
-	tagFr.SetInt64(1)
-	tagBytes := tagFr.Bytes()
-	h.Write(tagBytes[:])
-
-	// Hash chunk elements with randomness = 1
-	var oneFr fr.Element
-	oneFr.SetInt64(1)
+	elems := make([]fr.Element, 0, numElems)
 
 	buf := make([]byte, testElementSize)
-	var elem, pre fr.Element
+	var oneFr fr.Element
+	oneFr.SetInt64(1)
 
 	for offset := 0; offset < len(chunk); offset += testElementSize {
 		for i := range buf {
@@ -43,40 +37,33 @@ func testHashChunk(chunk []byte) *big.Int {
 		}
 		copy(buf, chunk[offset:end])
 
+		var elem, pre fr.Element
 		elem.SetBytes(buf)
 		pre.Mul(&elem, &oneFr)
-		preBytes := pre.Bytes()
-		h.Write(preBytes[:])
+		elems = append(elems, pre)
 	}
 
-	// Zero-pad remaining elements
-	numChunks := 528
-	fed := (len(chunk) + testElementSize - 1) / testElementSize
+	// Zero-pad remaining elements.
 	var zero fr.Element
-	zeroBytes := zero.Bytes()
-	for ; fed < numChunks; fed++ {
-		h.Write(zeroBytes[:])
+	for len(elems) < numElems {
+		elems = append(elems, zero)
 	}
 
-	return new(big.Int).SetBytes(h.Sum(nil))
+	result := crypto.SpongeHash(crypto.DomainTagReal, elems)
+	out := new(big.Int)
+	result.BigInt(out)
+	return out
 }
 
 // testZeroLeafHash computes the zero leaf hash (domain tag = 0, all zeros).
 func testZeroLeafHash() *big.Int {
-	h := poseidon2.NewMerkleDamgardHasher()
+	const numElems = 528
+	elems := make([]fr.Element, numElems) // all zero
 
-	var tagFr fr.Element
-	tagFr.SetInt64(0)
-	tagBytes := tagFr.Bytes()
-	h.Write(tagBytes[:])
-
-	var zero fr.Element
-	zeroBytes := zero.Bytes()
-	for i := 0; i < 528; i++ {
-		h.Write(zeroBytes[:])
-	}
-
-	return new(big.Int).SetBytes(h.Sum(nil))
+	result := crypto.SpongeHash(crypto.DomainTagPadding, elems)
+	out := new(big.Int)
+	result.BigInt(out)
+	return out
 }
 
 // TestSparseMerkleParallel verifies that the parallel leaf hashing in

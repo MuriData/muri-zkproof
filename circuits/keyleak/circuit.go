@@ -1,9 +1,9 @@
 package keyleak
 
 import (
+	"github.com/MuriData/muri-zkproof/circuits/shared"
+	"github.com/MuriData/muri-zkproof/pkg/crypto"
 	"github.com/consensys/gnark/frontend"
-	"github.com/consensys/gnark/std/hash"
-	"github.com/consensys/gnark/std/permutation/poseidon2"
 )
 
 // KeyLeakCircuit proves knowledge of a secret key whose hash matches a
@@ -19,8 +19,7 @@ type KeyLeakCircuit struct {
 }
 
 func (circuit *KeyLeakCircuit) Define(api frontend.API) error {
-	// Poseidon2 with same parameters as the PoI circuit.
-	p, err := poseidon2.NewPoseidon2FromParameters(api, 2, 6, 50)
+	sponge, err := shared.NewSpongeHasher(api)
 	if err != nil {
 		return err
 	}
@@ -32,9 +31,10 @@ func (circuit *KeyLeakCircuit) Define(api frontend.API) error {
 	api.AssertIsEqual(api.IsZero(circuit.PublicKey), 0)
 
 	// 3. Key ownership: publicKey == H(secretKey).
-	keyHasher := hash.NewMerkleDamgardHasher(api, p, 0)
-	keyHasher.Write(circuit.SecretKey)
-	derivedPubKey := keyHasher.Sum()
+	derivedPubKey, err := sponge.Hash(frontend.Variable(crypto.DomainTagPubKey), circuit.SecretKey)
+	if err != nil {
+		return err
+	}
 
 	api.AssertIsEqual(circuit.PublicKey, derivedPubKey)
 

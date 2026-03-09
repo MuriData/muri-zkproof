@@ -9,8 +9,8 @@ import (
 	"runtime"
 	"sync"
 
+	"github.com/MuriData/muri-zkproof/pkg/crypto"
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr"
-	"github.com/consensys/gnark-crypto/ecc/bn254/fr/poseidon2"
 )
 
 // MerkleNode represents a node in the Merkle tree.
@@ -79,22 +79,16 @@ func SplitIntoChunks(data []byte, chunkSize int) [][]byte {
 }
 
 // HashNodes hashes two node hashes together to create parent hash.
-// Inputs are converted to canonical 32-byte fr.Element encoding so that
-// a zero value writes 32 zero bytes (matching the circuit) instead of
-// the empty slice returned by big.Int.Bytes().
+// Uses Poseidon2 sponge with DomainTagNode for domain separation.
 func HashNodes(left, right *big.Int) *big.Int {
-	h := poseidon2.NewMerkleDamgardHasher()
-
 	var lFr, rFr fr.Element
 	lFr.SetBigInt(left)
 	rFr.SetBigInt(right)
 
-	lBytes := lFr.Bytes()
-	rBytes := rFr.Bytes()
-	h.Write(lBytes[:])
-	h.Write(rBytes[:])
-
-	return new(big.Int).SetBytes(h.Sum(nil))
+	result := crypto.SpongeHashFr(crypto.DomainTagNode, lFr, rFr)
+	out := new(big.Int)
+	result.BigInt(out)
+	return out
 }
 
 // GenerateMerkleTree builds a Merkle tree from pre-split chunks.

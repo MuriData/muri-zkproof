@@ -1,9 +1,9 @@
 package fsp
 
 import (
+	"github.com/MuriData/muri-zkproof/circuits/shared"
+	"github.com/MuriData/muri-zkproof/pkg/crypto"
 	"github.com/consensys/gnark/frontend"
-	"github.com/consensys/gnark/std/hash"
-	"github.com/consensys/gnark/std/permutation/poseidon2"
 )
 
 // BoundaryMerkleProof is a lightweight sub-circuit for boundary validation.
@@ -18,24 +18,20 @@ type BoundaryMerkleProof struct {
 // ComputeRoot hashes through all MaxTreeDepth levels and returns the computed
 // root. The caller is responsible for comparing it to the expected root (with
 // optional guarding for the isFull edge case).
-func (bp *BoundaryMerkleProof) ComputeRoot(api frontend.API) (frontend.Variable, error) {
-	p, err := poseidon2.NewPoseidon2FromParameters(api, 2, 6, 50)
-	if err != nil {
-		return nil, err
-	}
-	hasher := hash.NewMerkleDamgardHasher(api, p, 0)
-
+func (bp *BoundaryMerkleProof) ComputeRoot(api frontend.API, sponge *shared.SpongeHasher) (frontend.Variable, error) {
 	currentHash := bp.LeafHash
 
 	for i := 0; i < MaxTreeDepth; i++ {
 		sibling := bp.ProofPath[i]
 		direction := bp.Directions[i]
 
-		hasher.Reset()
 		leftHash := api.Select(direction, sibling, currentHash)
 		rightHash := api.Select(direction, currentHash, sibling)
-		hasher.Write(leftHash, rightHash)
-		currentHash = hasher.Sum()
+		var err error
+		currentHash, err = sponge.Hash(frontend.Variable(crypto.DomainTagNode), leftHash, rightHash)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	return currentHash, nil

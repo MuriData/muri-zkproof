@@ -6,80 +6,18 @@ import (
 
 	"github.com/consensys/gnark-crypto/ecc"
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr"
-	"github.com/consensys/gnark-crypto/ecc/bn254/fr/poseidon2"
 )
 
-// Domain tags for leaf hashing. Real leaves use DomainTagReal so that an
-// all-zero real chunk hashes differently from a padding leaf.
-const (
-	DomainTagReal    = 1
-	DomainTagPadding = 0
-)
-
-// Hash hashes the data using the Poseidon2 hash function and the given randomness.
-// elementSize is the byte width of each field element.
-// numChunks is the total number of chunks (data is padded with zeros to this count).
-func Hash(data []byte, randomness *big.Int, elementSize, numChunks int) *big.Int {
-	h := poseidon2.NewMerkleDamgardHasher()
-
-	// randomness as field element (only once)
-	var randElement fr.Element
-	randElement.SetBigInt(randomness)
-
-	buf := make([]byte, elementSize)
-	var element, preImageElement fr.Element
-
-	for offset := 0; offset < len(data); offset += elementSize {
-		// Zero the buffer without reallocating.
-		for i := range buf {
-			buf[i] = 0
-		}
-
-		end := offset + elementSize
-		if end > len(data) {
-			end = len(data)
-		}
-		copy(buf, data[offset:end])
-
-		// element = buf * randomness (field multiplication)
-		element.SetBytes(buf)
-		preImageElement.Mul(&element, &randElement)
-
-		preBytes := preImageElement.Bytes()
-		h.Write(preBytes[:])
-	}
-
-	// Remaining zero chunks (0 * randomness = 0)
-	var zero fr.Element // already zero
-	zeroBytes := zero.Bytes()
-	fed := (len(data) + elementSize - 1) / elementSize
-	for ; fed < numChunks; fed++ {
-		h.Write(zeroBytes[:])
-	}
-
-	return new(big.Int).SetBytes(h.Sum(nil))
-}
-
-// HashWithDomainTag hashes data with a domain separation tag prepended as the
-// first Poseidon2 input element. Otherwise identical to Hash: each data element
-// is multiplied by randomness, then zero-padded to numChunks total elements.
-// The total number of Poseidon2 writes is 1 (tag) + numChunks.
+// HashWithDomainTag hashes data with domain separation via the sponge
+// capacity lane. Each data element is multiplied by randomness before
+// absorption. The total number of absorbed elements is numChunks.
 func HashWithDomainTag(tag int, data []byte, randomness *big.Int, elementSize, numChunks int) *big.Int {
-	h := poseidon2.NewMerkleDamgardHasher()
-
-	// Write domain tag as the first element.
-	var tagFr fr.Element
-	tagFr.SetInt64(int64(tag))
-	tagBytes := tagFr.Bytes()
-	h.Write(tagBytes[:])
-
-	// randomness as field element (only once)
 	var randElement fr.Element
 	randElement.SetBigInt(randomness)
 
-	buf := make([]byte, elementSize)
-	var element, preImageElement fr.Element
+	elems := make([]fr.Element, 0, numChunks)
 
+	buf := make([]byte, elementSize)
 	for offset := 0; offset < len(data); offset += elementSize {
 		for i := range buf {
 			buf[i] = 0
@@ -91,34 +29,33 @@ func HashWithDomainTag(tag int, data []byte, randomness *big.Int, elementSize, n
 		}
 		copy(buf, data[offset:end])
 
+		var element, preImageElement fr.Element
 		element.SetBytes(buf)
 		preImageElement.Mul(&element, &randElement)
-
-		preBytes := preImageElement.Bytes()
-		h.Write(preBytes[:])
+		elems = append(elems, preImageElement)
 	}
 
-	// Remaining zero chunks (0 * randomness = 0)
+	// Remaining zero chunks (0 * randomness = 0).
 	var zero fr.Element
-	zeroBytes := zero.Bytes()
-	fed := (len(data) + elementSize - 1) / elementSize
-	if len(data) == 0 {
-		fed = 0
-	}
-	for ; fed < numChunks; fed++ {
-		h.Write(zeroBytes[:])
+	for len(elems) < numChunks {
+		elems = append(elems, zero)
 	}
 
-	return new(big.Int).SetBytes(h.Sum(nil))
+	result := SpongeHash(tag, elems)
+	out := new(big.Int)
+	result.BigInt(out)
+	return out
 }
 
 // ComputeZeroLeafHash returns the hash of a padding (empty) leaf with
-// DomainTagPadding. This is: H(0, 0, 0, ..., 0) with 1 + numChunks elements.
+// DomainTagPadding. This is: sponge(tag=0, [0, 0, ..., 0]) with numChunks
+// zero elements.
 func ComputeZeroLeafHash(elementSize, numChunks int) *big.Int {
 	return HashWithDomainTag(DomainTagPadding, []byte{}, big.NewInt(1), elementSize, numChunks)
 }
 
-// GenerateSecretKey generates a random secret key as a non-zero BN254 scalar field element.
+// GenerateSecretKey generates a random secret key as a non-zero BN254
+// scalar field element.
 func GenerateSecretKey() (*big.Int, error) {
 	for {
 		sk, err := rand.Int(rand.Reader, ecc.BN254.ScalarField())
@@ -131,59 +68,87 @@ func GenerateSecretKey() (*big.Int, error) {
 	}
 }
 
-// DerivePublicKey computes publicKey = H(secretKey) using Poseidon2, matching the circuit.
+// DerivePublicKey computes publicKey = H(secretKey) using Poseidon2
+// sponge with DomainTagPubKey, matching the circuit.
 func DerivePublicKey(secretKey *big.Int) *big.Int {
-	h := poseidon2.NewMerkleDamgardHasher()
-
-	var skFr fr.Element
-	skFr.SetBigInt(secretKey)
-	skBytes := skFr.Bytes()
-	h.Write(skBytes[:])
-
-	return new(big.Int).SetBytes(h.Sum(nil))
+	return SpongeHashBigInt(DomainTagPubKey, secretKey)
 }
 
-// DeriveAggMsg computes the aggregate message from multiple leaf hashes and
-// randomness: aggMsg = H(leafHash[0], ..., leafHash[n-1], randomness).
-// This matches the multi-opening circuit's aggregate message computation.
+// DeriveAggMsg computes the aggregate message from multiple leaf hashes
+// and randomness: aggMsg = H(leafHash[0], ..., leafHash[n-1], randomness).
+// Uses DomainTagAggMsg for domain separation.
 func DeriveAggMsg(leafHashes []*big.Int, randomness *big.Int) *big.Int {
-	h := poseidon2.NewMerkleDamgardHasher()
-
-	for _, lh := range leafHashes {
-		var elem fr.Element
-		elem.SetBigInt(lh)
-		b := elem.Bytes()
-		h.Write(b[:])
-	}
-
-	var randFr fr.Element
-	randFr.SetBigInt(randomness)
-	randBytes := randFr.Bytes()
-	h.Write(randBytes[:])
-
-	return new(big.Int).SetBytes(h.Sum(nil))
+	inputs := make([]*big.Int, 0, len(leafHashes)+1)
+	inputs = append(inputs, leafHashes...)
+	inputs = append(inputs, randomness)
+	return SpongeHashBigInt(DomainTagAggMsg, inputs...)
 }
 
 // DeriveCommitment computes the VRF-style commitment matching the circuit:
-// commitment = H(secretKey, msg, randomness, publicKey)
+// commitment = H(secretKey, msg, randomness, publicKey).
+// Uses DomainTagCommitment for domain separation.
 func DeriveCommitment(secretKey, msg, randomness, publicKey *big.Int) *big.Int {
-	h := poseidon2.NewMerkleDamgardHasher()
+	return SpongeHashBigInt(DomainTagCommitment, secretKey, msg, randomness, publicKey)
+}
 
-	var skFr, msgFr, randFr, pkFr fr.Element
-	skFr.SetBigInt(secretKey)
-	msgFr.SetBigInt(msg)
-	randFr.SetBigInt(randomness)
-	pkFr.SetBigInt(publicKey)
+// ---------------------------------------------------------------------------
+// Archive / MURI transform helpers (tags 3–6, 10–15)
+// ---------------------------------------------------------------------------
 
-	skBytes := skFr.Bytes()
-	msgBytes := msgFr.Bytes()
-	randBytes := randFr.Bytes()
-	pkBytes := pkFr.Bytes()
+// DeriveSlotLeaf computes the archive slot leaf hash:
+// slotLeaf = H(DomainTagSlot, fileRoot, numChunks, cumulativeChunks)
+func DeriveSlotLeaf(fileRoot, numChunks, cumulativeChunks *big.Int) *big.Int {
+	return SpongeHashBigInt(DomainTagSlot, fileRoot, numChunks, cumulativeChunks)
+}
 
-	h.Write(skBytes[:])
-	h.Write(msgBytes[:])
-	h.Write(randBytes[:])
-	h.Write(pkBytes[:])
+// DeriveArchiveOriginalRoot computes:
+// archiveOriginalRoot = H(DomainTagArchiveRoot, slotTreeRoot, totalRealChunks)
+func DeriveArchiveOriginalRoot(slotTreeRoot, totalRealChunks *big.Int) *big.Int {
+	return SpongeHashBigInt(DomainTagArchiveRoot, slotTreeRoot, totalRealChunks)
+}
 
-	return new(big.Int).SetBytes(h.Sum(nil))
+// DeriveGlobalR computes the per-replica sealing randomness:
+// r = H(DomainTagGlobalR, publicKey, archiveOriginalRoot)
+func DeriveGlobalR(publicKey, archiveOriginalRoot *big.Int) *big.Int {
+	return SpongeHashBigInt(DomainTagGlobalR, publicKey, archiveOriginalRoot)
+}
+
+// DeriveChallengeIdx computes a challenge index derivation:
+// idx = H(DomainTagChallengeIdx, randomness, k)
+func DeriveChallengeIdx(randomness, k *big.Int) *big.Int {
+	return SpongeHashBigInt(DomainTagChallengeIdx, randomness, k)
+}
+
+// DeriveKeySeed1 computes the Pass 1 element-0 seed key:
+// key1[0] = H(DomainTagKeySeed1, r)
+func DeriveKeySeed1(r *big.Int) *big.Int {
+	return SpongeHashBigInt(DomainTagKeySeed1, r)
+}
+
+// DeriveKeySeed2 computes the Pass 2 element-(N-1) seed key:
+// key2[N-1] = H(DomainTagKeySeed2, r)
+func DeriveKeySeed2(r *big.Int) *big.Int {
+	return SpongeHashBigInt(DomainTagKeySeed2, r)
+}
+
+// DeriveKeyElem1 computes the Pass 1 per-element key:
+// key1[j] = H(DomainTagKeyElem1, enc1[j-1], enc1[bp[0]], ..., enc1[bp[k-1]], r)
+// The caller assembles the inputs slice: [predecessor, backPointers..., r].
+func DeriveKeyElem1(inputs []*big.Int) *big.Int {
+	return SpongeHashBigInt(DomainTagKeyElem1, inputs...)
+}
+
+// DeriveKeyElem2 computes the Pass 2 per-element key:
+// key2[j] = H(DomainTagKeyElem2, enc2[j+1], enc2[bp[0]], ..., enc2[bp[k-1]], r)
+// The caller assembles the inputs slice: [successor, backPointers..., r].
+func DeriveKeyElem2(inputs []*big.Int) *big.Int {
+	return SpongeHashBigInt(DomainTagKeyElem2, inputs...)
+}
+
+// DeriveBackPointers computes back-pointer positions for element j:
+// seed = H(domainTag, j, r)
+// Positions are derived by bit-slicing the seed output.
+// domainTag must be DomainTagBackPtr1 (14) or DomainTagBackPtr2 (15).
+func DeriveBackPointers(domainTag int, j, r *big.Int) *big.Int {
+	return SpongeHashBigInt(domainTag, j, r)
 }

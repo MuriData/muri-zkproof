@@ -3,13 +3,12 @@ package poi
 import (
 	"math/big"
 
+	"github.com/MuriData/muri-zkproof/circuits/shared"
 	"github.com/MuriData/muri-zkproof/pkg/crypto"
 	"github.com/MuriData/muri-zkproof/pkg/merkle"
 	"github.com/consensys/gnark/frontend"
-	"github.com/consensys/gnark/std/hash"
 	"github.com/consensys/gnark/std/math/bits"
 	"github.com/consensys/gnark/std/math/cmp"
-	"github.com/consensys/gnark/std/permutation/poseidon2"
 )
 
 // zeroLeafHash is the domain-separated hash for padding leaves, computed once
@@ -50,7 +49,7 @@ type PoICircuit struct {
 }
 
 func (circuit *PoICircuit) Define(api frontend.API) error {
-	p, err := poseidon2.NewPoseidon2FromParameters(api, 2, 6, 50)
+	sponge, err := shared.NewSpongeHasher(api)
 	if err != nil {
 		return err
 	}
@@ -61,10 +60,10 @@ func (circuit *PoICircuit) Define(api frontend.API) error {
 	api.AssertIsEqual(api.IsZero(circuit.SecretKey), 0)
 	api.AssertIsEqual(api.IsZero(circuit.PublicKey), 0)
 
-	keyHasher := hash.NewMerkleDamgardHasher(api, p, 0)
-	keyHasher.Write(circuit.SecretKey)
-	derivedPubKey := keyHasher.Sum()
-	keyHasher.Reset()
+	derivedPubKey, err := sponge.Hash(frontend.Variable(crypto.DomainTagPubKey), circuit.SecretKey)
+	if err != nil {
+		return err
+	}
 	api.AssertIsEqual(circuit.PublicKey, derivedPubKey)
 
 	// ---------------------------------------------------------------
@@ -105,7 +104,7 @@ func (circuit *PoICircuit) Define(api frontend.API) error {
 	}
 
 	// Verify the proof path reconstructs the claimed root.
-	boundaryRoot, err := circuit.BoundaryProof.ComputeRoot(api)
+	boundaryRoot, err := circuit.BoundaryProof.ComputeRoot(api, sponge)
 	if err != nil {
 		return err
 	}
@@ -141,12 +140,12 @@ func (circuit *PoICircuit) Define(api frontend.API) error {
 		// Range check: leafIndex < numLeaves.
 		comparator.AssertIsLess(circuit.LeafIndices[k], circuit.NumLeaves)
 
-		// 5c. Compute domain-tagged leaf hash: H(1, bytes[k][0..528]).
-		leafHasher := hash.NewMerkleDamgardHasher(api, p, 0)
-		leafHasher.Write(frontend.Variable(crypto.DomainTagReal))
-		leafHasher.Write(circuit.Bytes[k][:]...)
-		leafHashes[k] = leafHasher.Sum()
-		leafHasher.Reset()
+		// 5c. Compute domain-tagged leaf hash: sponge(DomainTagReal, bytes[k][0..528]).
+		leafHash, err := sponge.Hash(frontend.Variable(crypto.DomainTagReal), circuit.Bytes[k][:]...)
+		if err != nil {
+			return err
+		}
+		leafHashes[k] = leafHash
 
 		// 5d. Link leaf hash and root hash to sub-circuit.
 		api.AssertIsEqual(circuit.MerkleProofs[k].LeafValue, leafHashes[k])
@@ -159,7 +158,7 @@ func (circuit *PoICircuit) Define(api frontend.API) error {
 		}
 
 		// 5f. Verify Merkle proof (all 20 levels, no skip).
-		if err := circuit.MerkleProofs[k].Define(api); err != nil {
+		if err := circuit.MerkleProofs[k].Define(api, sponge); err != nil {
 			return err
 		}
 	}
@@ -167,24 +166,26 @@ func (circuit *PoICircuit) Define(api frontend.API) error {
 	// ---------------------------------------------------------------
 	// 6. Aggregate message: aggMsg = H(leafHash[0], ..., leafHash[7], randomness).
 	// ---------------------------------------------------------------
-	aggHasher := hash.NewMerkleDamgardHasher(api, p, 0)
+	aggInputs := make([]frontend.Variable, OpeningsCount+1)
 	for k := 0; k < OpeningsCount; k++ {
-		aggHasher.Write(leafHashes[k])
+		aggInputs[k] = leafHashes[k]
 	}
-	aggHasher.Write(circuit.Randomness)
-	aggMsg := aggHasher.Sum()
-	aggHasher.Reset()
+	aggInputs[OpeningsCount] = circuit.Randomness
+	aggMsg, err := sponge.Hash(frontend.Variable(crypto.DomainTagAggMsg), aggInputs...)
+	if err != nil {
+		return err
+	}
 
 	// ---------------------------------------------------------------
 	// 7. VRF commitment: commitment = H(secretKey, aggMsg, randomness, publicKey).
 	// ---------------------------------------------------------------
-	vrfHasher := hash.NewMerkleDamgardHasher(api, p, 0)
-	vrfHasher.Write(circuit.SecretKey)
-	vrfHasher.Write(aggMsg)
-	vrfHasher.Write(circuit.Randomness)
-	vrfHasher.Write(circuit.PublicKey)
-	derivedCommitment := vrfHasher.Sum()
-	vrfHasher.Reset()
+	derivedCommitment, err := sponge.Hash(
+		frontend.Variable(crypto.DomainTagCommitment),
+		circuit.SecretKey, aggMsg, circuit.Randomness, circuit.PublicKey,
+	)
+	if err != nil {
+		return err
+	}
 
 	api.AssertIsEqual(circuit.Commitment, derivedCommitment)
 
