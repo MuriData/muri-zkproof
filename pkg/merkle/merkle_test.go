@@ -3,7 +3,6 @@ package merkle
 import (
 	"bytes"
 	"crypto/rand"
-	"math/big"
 	"strings"
 	"testing"
 
@@ -19,52 +18,14 @@ const (
 
 // testHashChunk is a deterministic leaf hash function for testing.
 // Uses Poseidon2 sponge with DomainTagReal and randomness = 1.
-func testHashChunk(chunk []byte) *big.Int {
-	const numElems = 528
-
-	elems := make([]fr.Element, 0, numElems)
-
-	buf := make([]byte, testElementSize)
-	var oneFr fr.Element
-	oneFr.SetInt64(1)
-
-	for offset := 0; offset < len(chunk); offset += testElementSize {
-		for i := range buf {
-			buf[i] = 0
-		}
-		end := offset + testElementSize
-		if end > len(chunk) {
-			end = len(chunk)
-		}
-		copy(buf, chunk[offset:end])
-
-		var elem, pre fr.Element
-		elem.SetBytes(buf)
-		pre.Mul(&elem, &oneFr)
-		elems = append(elems, pre)
-	}
-
-	// Zero-pad remaining elements.
-	var zero fr.Element
-	for len(elems) < numElems {
-		elems = append(elems, zero)
-	}
-
-	result := crypto.SpongeHash(crypto.DomainTagReal, elems)
-	out := new(big.Int)
-	result.BigInt(out)
-	return out
+// Returns fr.Element directly (no *big.Int conversion).
+func testHashChunk(chunk []byte) fr.Element {
+	return crypto.HashLeafFr(crypto.DomainTagReal, chunk, testElementSize, 528)
 }
 
 // testZeroLeafHash computes the zero leaf hash (domain tag = 0, all zeros).
-func testZeroLeafHash() *big.Int {
-	const numElems = 528
-	elems := make([]fr.Element, numElems) // all zero
-
-	result := crypto.SpongeHash(crypto.DomainTagPadding, elems)
-	out := new(big.Int)
-	result.BigInt(out)
-	return out
+func testZeroLeafHash() fr.Element {
+	return crypto.ComputeZeroLeafHashFr(testElementSize, 528)
 }
 
 // TestSparseMerkleParallel verifies that the parallel leaf hashing in
@@ -87,8 +48,8 @@ func TestSparseMerkleParallel(t *testing.T) {
 				t.Fatalf("build SMT: %v", err)
 			}
 
-			// Recompute root sequentially for comparison.
-			seqLeafHashes := make([]*big.Int, len(chunks))
+			// Recompute leaf hashes sequentially for comparison.
+			seqLeafHashes := make([]fr.Element, len(chunks))
 			for i, c := range chunks {
 				seqLeafHashes[i] = testHashChunk(c)
 			}
@@ -96,13 +57,14 @@ func TestSparseMerkleParallel(t *testing.T) {
 			// Verify leaf hashes match.
 			for i, h := range seqLeafHashes {
 				got := smt.GetLeafHash(i)
-				if got.Cmp(h) != 0 {
-					t.Fatalf("leaf %d hash mismatch: parallel=%s, sequential=%s", i, got, h)
+				if got != h {
+					t.Fatalf("leaf %d hash mismatch", i)
 				}
 			}
 
 			// Verify root is non-zero.
-			if smt.Root.Sign() == 0 {
+			var zero fr.Element
+			if smt.Root == zero {
 				t.Fatal("root hash is zero")
 			}
 
@@ -112,7 +74,8 @@ func TestSparseMerkleParallel(t *testing.T) {
 				t.Fatalf("proof length %d, want %d", len(siblings), testMaxDepth)
 			}
 
-			t.Logf("chunks=%d root=0x%x...", n, smt.Root.Bytes()[:8])
+			rootBytes := smt.Root.Bytes()
+			t.Logf("chunks=%d root=0x%x...", n, rootBytes[:8])
 		})
 	}
 }
@@ -156,23 +119,19 @@ func TestSMTSaveLoad(t *testing.T) {
 			if loaded.NumLeaves != original.NumLeaves {
 				t.Fatalf("numLeaves: got %d, want %d", loaded.NumLeaves, original.NumLeaves)
 			}
-			if loaded.Root.Cmp(original.Root) != 0 {
-				t.Fatalf("root mismatch: got %s, want %s", loaded.Root, original.Root)
+			if loaded.Root != original.Root {
+				t.Fatalf("root mismatch")
 			}
 
 			// Verify all level entries match.
 			for lvl := 0; lvl <= original.Depth; lvl++ {
-				origMap := original.Levels[lvl]
-				loadMap := loaded.Levels[lvl]
-				if len(origMap) != len(loadMap) {
-					t.Fatalf("level %d: entry count %d != %d", lvl, len(loadMap), len(origMap))
+				origSlice := original.Levels[lvl]
+				loadSlice := loaded.Levels[lvl]
+				if len(origSlice) != len(loadSlice) {
+					t.Fatalf("level %d: entry count %d != %d", lvl, len(loadSlice), len(origSlice))
 				}
-				for idx, origHash := range origMap {
-					loadHash, ok := loadMap[idx]
-					if !ok {
-						t.Fatalf("level %d: missing index %d", lvl, idx)
-					}
-					if origHash.Cmp(loadHash) != 0 {
+				for idx, origHash := range origSlice {
+					if origHash != loadSlice[idx] {
 						t.Fatalf("level %d index %d: hash mismatch", lvl, idx)
 					}
 				}
@@ -183,7 +142,7 @@ func TestSMTSaveLoad(t *testing.T) {
 				origSib, origDir := original.GetProof(i)
 				loadSib, loadDir := loaded.GetProof(i)
 				for j := 0; j < testMaxDepth; j++ {
-					if origSib[j].Cmp(loadSib[j]) != 0 {
+					if origSib[j] != loadSib[j] {
 						t.Fatalf("proof[%d] sibling[%d] mismatch", i, j)
 					}
 					if origDir[j] != loadDir[j] {
@@ -213,7 +172,7 @@ func TestSMTSaveLoadEmpty(t *testing.T) {
 		t.Fatalf("load: %v", err)
 	}
 
-	if loaded.Root.Cmp(original.Root) != 0 {
+	if loaded.Root != original.Root {
 		t.Fatalf("root mismatch for empty tree")
 	}
 	if loaded.NumLeaves != 0 {
@@ -238,7 +197,11 @@ func TestGenerateSparseMerkleTreeRejectsTooManyLeaves(t *testing.T) {
 }
 
 func TestBuildSMTFromLeafHashesRejectsTooManyLeaves(t *testing.T) {
-	leafHashes := []*big.Int{big.NewInt(1), big.NewInt(2), big.NewInt(3)}
+	var a, b, c fr.Element
+	a.SetInt64(1)
+	b.SetInt64(2)
+	c.SetInt64(3)
+	leafHashes := []fr.Element{a, b, c}
 
 	_, err := BuildSMTFromLeafHashes(leafHashes, 1, testZeroLeafHash())
 	if err == nil {
@@ -344,7 +307,7 @@ func TestCheckpointedRebuildProof(t *testing.T) {
 				}
 
 				// Verify root matches.
-				if csmt.Root.Cmp(fullSMT.Root) != 0 {
+				if csmt.Root != fullSMT.Root {
 					t.Fatalf("root mismatch")
 				}
 
@@ -356,9 +319,9 @@ func TestCheckpointedRebuildProof(t *testing.T) {
 					result := csmt.RebuildProof(leafIdx, readChunk, testHashChunk)
 
 					for lvl := 0; lvl < testMaxDepth; lvl++ {
-						if fullSib[lvl].Cmp(result.Siblings[lvl]) != 0 {
-							t.Fatalf("leaf %d: sibling mismatch at level %d: full=%s rebuilt=%s",
-								leafIdx, lvl, fullSib[lvl], result.Siblings[lvl])
+						if fullSib[lvl] != result.Siblings[lvl] {
+							t.Fatalf("leaf %d: sibling mismatch at level %d",
+								leafIdx, lvl)
 						}
 						if fullDir[lvl] != result.Directions[lvl] {
 							t.Fatalf("leaf %d: direction mismatch at level %d", leafIdx, lvl)
@@ -366,7 +329,7 @@ func TestCheckpointedRebuildProof(t *testing.T) {
 					}
 
 					expectedLeaf := fullSMT.GetLeafHash(leafIdx)
-					if expectedLeaf.Cmp(result.LeafHash) != 0 {
+					if expectedLeaf != result.LeafHash {
 						t.Fatalf("leaf %d: leaf hash mismatch", leafIdx)
 					}
 				}
@@ -414,7 +377,7 @@ func TestCheckpointedSaveLoad(t *testing.T) {
 			if csmt.NumLeaves != len(chunks) {
 				t.Fatalf("numLeaves: got %d want %d", csmt.NumLeaves, len(chunks))
 			}
-			if csmt.Root.Cmp(fullSMT.Root) != 0 {
+			if csmt.Root != fullSMT.Root {
 				t.Fatalf("root mismatch")
 			}
 
@@ -426,11 +389,7 @@ func TestCheckpointedSaveLoad(t *testing.T) {
 					t.Fatalf("level %d: count %d != %d", lvl, len(stored), len(full))
 				}
 				for idx, sh := range stored {
-					fh, ok := full[idx]
-					if !ok {
-						t.Fatalf("level %d index %d: not in full SMT", lvl, idx)
-					}
-					if sh.Cmp(fh) != 0 {
+					if sh != full[idx] {
 						t.Fatalf("level %d index %d: hash mismatch", lvl, idx)
 					}
 				}
@@ -473,7 +432,7 @@ func TestCheckpointedPaddingLeaf(t *testing.T) {
 			result := csmt.RebuildProof(paddingIdx, readChunk, testHashChunk)
 
 			for lvl := 0; lvl < testMaxDepth; lvl++ {
-				if fullSib[lvl].Cmp(result.Siblings[lvl]) != 0 {
+				if fullSib[lvl] != result.Siblings[lvl] {
 					t.Fatalf("padding leaf %d: sibling mismatch at level %d", paddingIdx, lvl)
 				}
 				if fullDir[lvl] != result.Directions[lvl] {
@@ -481,7 +440,7 @@ func TestCheckpointedPaddingLeaf(t *testing.T) {
 				}
 			}
 
-			if result.LeafHash.Cmp(zeroLeaf) != 0 {
+			if result.LeafHash != zeroLeaf {
 				t.Fatalf("padding leaf %d: leaf hash should be zero leaf hash", paddingIdx)
 			}
 		})
@@ -525,13 +484,13 @@ func TestCheckpointedSchemeLeavesOnly(t *testing.T) {
 		result := csmt.RebuildProof(leafIdx, readChunk, testHashChunk)
 
 		for lvl := 0; lvl < testMaxDepth; lvl++ {
-			if fullSib[lvl].Cmp(result.Siblings[lvl]) != 0 {
+			if fullSib[lvl] != result.Siblings[lvl] {
 				t.Fatalf("leaf %d: sibling mismatch at level %d", leafIdx, lvl)
 			}
 		}
 
 		expectedLeaf := fullSMT.GetLeafHash(leafIdx)
-		if expectedLeaf.Cmp(result.LeafHash) != 0 {
+		if expectedLeaf != result.LeafHash {
 			t.Fatalf("leaf %d: leaf hash mismatch", leafIdx)
 		}
 	}
@@ -554,7 +513,7 @@ func TestCheckpointedEmpty(t *testing.T) {
 		t.Fatalf("load: %v", err)
 	}
 
-	if csmt.Root.Cmp(fullSMT.Root) != 0 {
+	if csmt.Root != fullSMT.Root {
 		t.Fatalf("root mismatch for empty tree")
 	}
 }

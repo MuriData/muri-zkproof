@@ -23,7 +23,7 @@ import (
 func buildSMT(t *testing.T, data []byte) (*merkle.SparseMerkleTree, [][]byte) {
 	t.Helper()
 	chunks := merkle.SplitIntoChunks(data, poi.FileSize)
-	zeroLeaf := crypto.ComputeZeroLeafHash(poi.ElementSize, poi.NumChunks)
+	zeroLeaf := crypto.ComputeZeroLeafHashFr(poi.ElementSize, poi.NumChunks)
 	smt, err := merkle.GenerateSparseMerkleTree(chunks, poi.MaxTreeDepth, poi.HashChunk, zeroLeaf)
 	if err != nil {
 		t.Fatalf("build SMT: %v", err)
@@ -81,7 +81,8 @@ func TestPoICircuitEndToEnd(t *testing.T) {
 	}
 	smt, chunks := buildSMT(t, wholeFileData)
 	t.Logf("Generated %d bytes of random data (%d chunks)", testFileSize, smt.NumLeaves)
-	t.Logf("Merkle root: 0x%x", smt.Root.Bytes())
+	rootBytes := smt.Root.Bytes()
+	t.Logf("Merkle root: 0x%x", rootBytes[:])
 
 	// 4. Generate randomness and secret key
 	randomness, err := rand.Int(rand.Reader, ecc.BN254.ScalarField())

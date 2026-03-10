@@ -8,6 +8,7 @@ import (
 	"github.com/MuriData/muri-zkproof/pkg/crypto"
 	"github.com/MuriData/muri-zkproof/pkg/field"
 	"github.com/MuriData/muri-zkproof/pkg/merkle"
+	"github.com/consensys/gnark-crypto/ecc/bn254/fr"
 	"github.com/consensys/gnark/frontend"
 )
 
@@ -52,7 +53,7 @@ func PrepareWitness(secretKey, randomness *big.Int, chunks [][]byte, smt *merkle
 	assignment.NumLeaves = numLeaves
 
 	var chunkIndices [OpeningsCount]int
-	var leafHashes [OpeningsCount]*big.Int
+	var leafHashes [OpeningsCount]fr.Element
 
 	numLeavesBig := big.NewInt(int64(numLeaves))
 
@@ -63,7 +64,7 @@ func PrepareWitness(secretKey, randomness *big.Int, chunks [][]byte, smt *merkle
 		quotient    *big.Int
 		leafIndex   *big.Int
 		merkleProof MerkleProofCircuit
-		leafHash    *big.Int
+		leafHash    fr.Element
 	}
 	var results [OpeningsCount]openingResult
 
@@ -116,7 +117,7 @@ func PrepareWitness(secretKey, randomness *big.Int, chunks [][]byte, smt *merkle
 					ProofPath:  proofPath,
 					Directions: proofDirections,
 				},
-				leafHash: HashChunk(chunkData),
+				leafHash: smt.GetLeafHash(leafIndex),
 			}
 		}(k)
 	}
@@ -134,7 +135,13 @@ func PrepareWitness(secretKey, randomness *big.Int, chunks [][]byte, smt *merkle
 	}
 
 	// Aggregate message and commitment.
-	aggMsg := crypto.DeriveAggMsg(leafHashes[:], randomness)
+	// Convert fr.Element leaf hashes to *big.Int for DeriveAggMsg.
+	leafHashesBig := make([]*big.Int, OpeningsCount)
+	for i := 0; i < OpeningsCount; i++ {
+		leafHashesBig[i] = new(big.Int)
+		leafHashes[i].BigInt(leafHashesBig[i])
+	}
+	aggMsg := crypto.DeriveAggMsg(leafHashesBig, randomness)
 	commitment := crypto.DeriveCommitment(secretKey, aggMsg, randomness, publicKey)
 	assignment.Commitment = commitment
 
@@ -149,8 +156,7 @@ func PrepareWitness(secretKey, randomness *big.Int, chunks [][]byte, smt *merkle
 }
 
 // HashChunk hashes a single chunk using Poseidon2 with domain tag = 1
-// (real leaf) and randomness = 1. This is the leaf hash function used by
-// the sparse Merkle tree.
-func HashChunk(chunk []byte) *big.Int {
-	return crypto.HashWithDomainTag(crypto.DomainTagReal, chunk, big.NewInt(1), ElementSize, NumChunks)
+// (real leaf). This is the leaf hash function used by the sparse Merkle tree.
+func HashChunk(chunk []byte) fr.Element {
+	return crypto.HashLeafFr(crypto.DomainTagReal, chunk, ElementSize, NumChunks)
 }

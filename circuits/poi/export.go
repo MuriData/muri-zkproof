@@ -66,7 +66,7 @@ func ExportProofFixture(keysDir string) ([]byte, error) {
 	skFr.BigInt(secretKey)
 
 	// 5. Build sparse Merkle tree and prepare the full witness
-	zeroLeaf := crypto.ComputeZeroLeafHash(ElementSize, NumChunks)
+	zeroLeaf := crypto.ComputeZeroLeafHashFr(ElementSize, NumChunks)
 	smt, err := merkle.GenerateSparseMerkleTree(chunks, MaxTreeDepth, HashChunk, zeroLeaf)
 	if err != nil {
 		return nil, fmt.Errorf("build SMT: %w", err)
@@ -134,7 +134,7 @@ func ExportProofFixture(keysDir string) ([]byte, error) {
 
 	fixture := ProofFixture{
 		Randomness: fmt.Sprintf("0x%064x", randomness),
-		RootHash:   fmt.Sprintf("0x%064x", smt.Root),
+		RootHash:   fmt.Sprintf("0x%064x", smt.RootBigInt()),
 		Commitment: fmt.Sprintf("0x%064x", result.Commitment),
 		PublicKey:  fmt.Sprintf("0x%064x", result.PublicKey),
 		NumLeaves:  fmt.Sprintf("0x%064x", big.NewInt(int64(result.NumLeaves))),

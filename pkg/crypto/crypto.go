@@ -152,3 +152,38 @@ func DeriveKeyElem2(inputs []*big.Int) *big.Int {
 func DeriveBackPointers(domainTag int, j, r *big.Int) *big.Int {
 	return SpongeHashBigInt(domainTag, j, r)
 }
+
+// HashLeafFr hashes raw chunk data with domain separation, returning an
+// fr.Element directly. This is the optimized path for leaf hashing where
+// randomness is 1 — the per-element multiply is skipped entirely.
+func HashLeafFr(tag int, data []byte, elementSize, numChunks int) fr.Element {
+	elems := make([]fr.Element, 0, numChunks)
+
+	buf := make([]byte, elementSize)
+	for offset := 0; offset < len(data); offset += elementSize {
+		for i := range buf {
+			buf[i] = 0
+		}
+		end := offset + elementSize
+		if end > len(data) {
+			end = len(data)
+		}
+		copy(buf, data[offset:end])
+
+		var elem fr.Element
+		elem.SetBytes(buf)
+		elems = append(elems, elem)
+	}
+
+	var zero fr.Element
+	for len(elems) < numChunks {
+		elems = append(elems, zero)
+	}
+
+	return SpongeHash(tag, elems)
+}
+
+// ComputeZeroLeafHashFr returns the fr.Element hash of a padding leaf.
+func ComputeZeroLeafHashFr(elementSize, numChunks int) fr.Element {
+	return HashLeafFr(DomainTagPadding, []byte{}, elementSize, numChunks)
+}

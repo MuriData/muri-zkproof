@@ -21,7 +21,7 @@ import (
 func buildSMT(t *testing.T, data []byte) (*merkle.SparseMerkleTree, [][]byte) {
 	t.Helper()
 	chunks := merkle.SplitIntoChunks(data, fsp.FileSize)
-	zeroLeaf := crypto.ComputeZeroLeafHash(fsp.ElementSize, fsp.NumChunks)
+	zeroLeaf := crypto.ComputeZeroLeafHashFr(fsp.ElementSize, fsp.NumChunks)
 	smt, err := merkle.GenerateSparseMerkleTree(chunks, fsp.MaxTreeDepth, fsp.HashChunk, zeroLeaf)
 	if err != nil {
 		t.Fatalf("build SMT: %v", err)
@@ -78,7 +78,8 @@ func TestFSPCircuitEndToEnd(t *testing.T) {
 	}
 	smt, _ := buildSMT(t, wholeFileData)
 	t.Logf("Generated %d bytes of random data (%d chunks)", testFileSize, smt.NumLeaves)
-	t.Logf("Merkle root: 0x%x", smt.Root.Bytes())
+	rootBytes := smt.Root.Bytes()
+	t.Logf("Merkle root: 0x%x", rootBytes[:])
 
 	// 4. Prepare witness
 	result, err := fsp.PrepareWitness(smt)

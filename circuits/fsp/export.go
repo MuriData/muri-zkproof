@@ -48,7 +48,7 @@ func ExportProofFixture(keysDir string) ([]byte, error) {
 	fmt.Printf("Chunks: %d\n", len(chunks))
 
 	// 4. Build sparse Merkle tree and prepare the witness
-	zeroLeaf := crypto.ComputeZeroLeafHash(ElementSize, NumChunks)
+	zeroLeaf := crypto.ComputeZeroLeafHashFr(ElementSize, NumChunks)
 	smt, err := merkle.GenerateSparseMerkleTree(chunks, MaxTreeDepth, HashChunk, zeroLeaf)
 	if err != nil {
 		return nil, fmt.Errorf("build SMT: %w", err)
@@ -113,7 +113,7 @@ func ExportProofFixture(keysDir string) ([]byte, error) {
 	solidityProof := [8]*big.Int{aX, aY, bX1, bX0, bY1, bY0, cX, cY}
 
 	fixture := ProofFixture{
-		RootHash:  fmt.Sprintf("0x%064x", smt.Root),
+		RootHash:  fmt.Sprintf("0x%064x", smt.RootBigInt()),
 		NumChunks: fmt.Sprintf("%d", result.NumLeaves),
 	}
 	for i := 0; i < 8; i++ {

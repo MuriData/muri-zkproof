@@ -5,6 +5,7 @@ import (
 
 	"github.com/MuriData/muri-zkproof/circuits/shared"
 	"github.com/MuriData/muri-zkproof/pkg/crypto"
+	"github.com/consensys/gnark-crypto/ecc/bn254/fr"
 	"github.com/consensys/gnark/frontend"
 	"github.com/consensys/gnark/std/math/bits"
 	"github.com/consensys/gnark/std/math/cmp"
@@ -12,10 +13,10 @@ import (
 
 // zeroLeafHash is the domain-separated hash for padding leaves, computed once
 // at package init. It is used as a circuit constant.
-var zeroLeafHash *big.Int
+var zeroLeafHash fr.Element
 
 func init() {
-	zeroLeafHash = crypto.ComputeZeroLeafHash(ElementSize, NumChunks)
+	zeroLeafHash = crypto.ComputeZeroLeafHashFr(ElementSize, NumChunks)
 }
 
 type PoICircuit struct {

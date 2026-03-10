@@ -1,24 +1,23 @@
 package fsp
 
 import (
-	"math/big"
-
 	"github.com/MuriData/muri-zkproof/circuits/shared"
 	"github.com/MuriData/muri-zkproof/pkg/crypto"
 	"github.com/MuriData/muri-zkproof/pkg/merkle"
+	"github.com/consensys/gnark-crypto/ecc/bn254/fr"
 	"github.com/consensys/gnark/frontend"
 )
 
 // zeroLeafHash is the domain-separated hash for padding leaves, computed once
 // at package init. It is used as a circuit constant.
-var zeroLeafHash *big.Int
+var zeroLeafHash fr.Element
 
 // zeroSubtreeHashes[j] is the hash of an all-zero subtree of depth j.
 // zeroSubtreeHashes[0] = zeroLeafHash, zeroSubtreeHashes[j] = H(zh[j-1], zh[j-1]).
-var zeroSubtreeHashes [MaxTreeDepth]*big.Int
+var zeroSubtreeHashes [MaxTreeDepth]fr.Element
 
 func init() {
-	zeroLeafHash = crypto.ComputeZeroLeafHash(ElementSize, NumChunks)
+	zeroLeafHash = crypto.ComputeZeroLeafHashFr(ElementSize, NumChunks)
 	zh := merkle.PrecomputeZeroHashes(MaxTreeDepth, zeroLeafHash)
 	for i := 0; i < MaxTreeDepth; i++ {
 		zeroSubtreeHashes[i] = zh[i]

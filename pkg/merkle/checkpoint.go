@@ -4,7 +4,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
-	"math/big"
 	"runtime"
 	"sync"
 
@@ -22,7 +21,7 @@ import (
 //   - Bottom gap (level 0 → first checkpoint): re-reads chunks from storage
 //     and parallel-hashes them using a worker pool (the expensive step).
 //   - Middle/upper gaps: rebuild from stored checkpoint entries via cheap
-//     HashNodes calls (each gap in its own goroutine).
+//     HashNodesFr calls (each gap in its own goroutine).
 //
 // Graduated spacing — smaller gaps near the bottom, larger near the top —
 // equalises per-gap rebuild cost so that wall-clock time ≈ max(gap_times)
@@ -56,19 +55,19 @@ var (
 // CheckpointedSMT holds only the entries at checkpoint levels plus the
 // precomputed zero-subtree hash chain.
 type CheckpointedSMT struct {
-	Root       *big.Int
+	Root       fr.Element
 	Depth      int
 	NumLeaves  int
 	Scheme     CheckpointScheme
-	Levels     map[int]map[int]*big.Int // checkpoint level → index → hash
-	ZeroHashes []*big.Int
+	Levels     map[int][]fr.Element // checkpoint level → flat slice of entries
+	ZeroHashes []fr.Element
 }
 
 // RebuildProofResult holds the output of CheckpointedSMT.RebuildProof.
 type RebuildProofResult struct {
-	Siblings   []*big.Int
+	Siblings   []fr.Element
 	Directions []int
-	LeafHash   *big.Int
+	LeafHash   fr.Element
 }
 
 // segment is a contiguous range of tree levels [lo, hi) that must be
@@ -114,22 +113,15 @@ func (smt *SparseMerkleTree) SaveCheckpointed(w io.Writer, scheme CheckpointSche
 
 	// Per-checkpoint-level entries.
 	for _, lvl := range scheme.Levels {
-		m := smt.Levels[lvl]
-		if err := binary.Write(w, binary.BigEndian, uint32(len(m))); err != nil {
+		entries := smt.Levels[lvl]
+		if err := binary.Write(w, binary.BigEndian, uint32(len(entries))); err != nil {
 			return fmt.Errorf("write level %d count: %w", lvl, err)
 		}
-		indices := make([]int, 0, len(m))
-		for idx := range m {
-			indices = append(indices, idx)
-		}
-		sortInts(indices)
-		for _, idx := range indices {
+		for idx := range entries {
 			if err := binary.Write(w, binary.BigEndian, uint32(idx)); err != nil {
 				return fmt.Errorf("write level %d index: %w", lvl, err)
 			}
-			var elem fr.Element
-			elem.SetBigInt(m[idx])
-			b := elem.Bytes()
+			b := entries[idx].Bytes()
 			if _, err := w.Write(b[:]); err != nil {
 				return fmt.Errorf("write level %d hash: %w", lvl, err)
 			}
@@ -140,7 +132,7 @@ func (smt *SparseMerkleTree) SaveCheckpointed(w io.Writer, scheme CheckpointSche
 
 // LoadCheckpointedSMT reads a checkpointed SMT written by SaveCheckpointed.
 // zeroLeafHash is needed to rebuild the zero-subtree hash chain.
-func LoadCheckpointedSMT(r io.Reader, zeroLeafHash *big.Int) (*CheckpointedSMT, error) {
+func LoadCheckpointedSMT(r io.Reader, zeroLeafHash fr.Element) (*CheckpointedSMT, error) {
 	var depth, numLeaves, numLevels uint32
 	if err := binary.Read(r, binary.BigEndian, &depth); err != nil {
 		return nil, fmt.Errorf("read depth: %w", err)
@@ -163,13 +155,13 @@ func LoadCheckpointedSMT(r io.Reader, zeroLeafHash *big.Int) (*CheckpointedSMT, 
 
 	zeroHashes := PrecomputeZeroHashes(int(depth), zeroLeafHash)
 
-	levels := make(map[int]map[int]*big.Int, int(numLevels))
+	levels := make(map[int][]fr.Element, int(numLevels))
 	for _, lvl := range checkpointLevels {
 		var count uint32
 		if err := binary.Read(r, binary.BigEndian, &count); err != nil {
 			return nil, fmt.Errorf("read level %d count: %w", lvl, err)
 		}
-		m := make(map[int]*big.Int, int(count))
+		entries := make([]fr.Element, count)
 		var hashBuf [32]byte
 		for j := 0; j < int(count); j++ {
 			var idx uint32
@@ -179,19 +171,18 @@ func LoadCheckpointedSMT(r io.Reader, zeroLeafHash *big.Int) (*CheckpointedSMT, 
 			if _, err := io.ReadFull(r, hashBuf[:]); err != nil {
 				return nil, fmt.Errorf("read level %d hash: %w", lvl, err)
 			}
-			var elem fr.Element
-			elem.SetBytes(hashBuf[:])
-			m[int(idx)] = new(big.Int)
-			elem.BigInt(m[int(idx)])
+			if int(idx) < len(entries) {
+				entries[idx].SetBytes(hashBuf[:])
+			}
 		}
-		levels[lvl] = m
+		levels[lvl] = entries
 	}
 
 	// Root is at levels[depth][0], or the zero hash for an empty tree.
 	root := zeroHashes[depth]
 	if rootLevel, ok := levels[int(depth)]; ok {
-		if r, ok := rootLevel[0]; ok {
-			root = r
+		if len(rootLevel) > 0 {
+			root = rootLevel[0]
 		}
 	}
 
@@ -218,8 +209,8 @@ func LoadCheckpointedSMT(r io.Reader, zeroLeafHash *big.Int) (*CheckpointedSMT, 
 //
 // The returned LeafHash is the hash at leafIndex (recomputed if necessary,
 // or the zero leaf hash for padding positions).
-func (csmt *CheckpointedSMT) RebuildProof(leafIndex int, readChunk func(int) []byte, hashLeaf HashFunc) *RebuildProofResult {
-	siblings := make([]*big.Int, csmt.Depth)
+func (csmt *CheckpointedSMT) RebuildProof(leafIndex int, readChunk func(int) []byte, hashLeaf HashFuncFr) *RebuildProofResult {
+	siblings := make([]fr.Element, csmt.Depth)
 	directions := make([]int, csmt.Depth)
 
 	// Compute directions (identical to SparseMerkleTree.GetProof).
@@ -238,8 +229,9 @@ func (csmt *CheckpointedSMT) RebuildProof(leafIndex int, readChunk func(int) []b
 
 	// Per-segment results. Each goroutine writes to its own slot.
 	type segResult struct {
-		siblings map[int]*big.Int // absLevel → sibling hash
-		leafHash *big.Int         // set only by the bottom segment
+		siblings map[int]fr.Element // absLevel → sibling hash
+		leafHash fr.Element
+		hasLeaf  bool
 	}
 	results := make([]segResult, len(segments))
 
@@ -260,63 +252,81 @@ func (csmt *CheckpointedSMT) RebuildProof(leafIndex int, readChunk func(int) []b
 			subtreeSize := 1 << gapDepth
 
 			// Populate base-level entries for this subtree.
-			baseEntries := make(map[int]*big.Int)
-			var segLeafHash *big.Int
+			baseEntries := make([]fr.Element, subtreeSize)
+			baseSet := make([]bool, subtreeSize)
+			var segLeafHash fr.Element
+			hasLeaf := false
 
 			if seg.needsChunks {
 				// Bottom gap: parallel leaf hashing from chunk data.
-				baseEntries, segLeafHash = csmt.rebuildBottomEntries(
+				csmt.rebuildBottomEntries(
 					baseStart, subtreeSize, leafIndex, readChunk, hashLeaf, len(segments),
+					baseEntries, baseSet,
 				)
+				localOffset := leafIndex - baseStart
+				if localOffset >= 0 && localOffset < subtreeSize && baseSet[localOffset] {
+					segLeafHash = baseEntries[localOffset]
+					hasLeaf = true
+				} else {
+					segLeafHash = csmt.ZeroHashes[0]
+					hasLeaf = true
+				}
 			} else {
 				// Middle/upper gap: look up stored entries at the base level.
 				if stored, ok := csmt.Levels[seg.lo]; ok {
 					for i := 0; i < subtreeSize; i++ {
 						absIdx := baseStart + i
-						if h, ok := stored[absIdx]; ok {
-							baseEntries[absIdx] = h
+						if absIdx < len(stored) {
+							baseEntries[i] = stored[absIdx]
+							baseSet[i] = true
 						}
 					}
 				}
 				// If this segment covers level 0 (leaves are stored),
 				// extract the leaf hash directly.
 				if seg.lo == 0 {
-					if h, ok := baseEntries[leafIndex]; ok {
-						segLeafHash = h
+					localOffset := leafIndex - baseStart
+					if localOffset >= 0 && localOffset < subtreeSize && baseSet[localOffset] {
+						segLeafHash = baseEntries[localOffset]
 					} else {
 						segLeafHash = csmt.ZeroHashes[0]
 					}
+					hasLeaf = true
 				}
 			}
 
 			// Build upward through the gap, extracting siblings at each level.
-			segSiblings := csmt.buildGap(baseEntries, seg.lo, gapDepth, leafIndex)
+			segSiblings := csmt.buildGap(baseEntries, baseSet, seg.lo, gapDepth, leafIndex)
 
 			results[si].siblings = segSiblings
 			results[si].leafHash = segLeafHash
+			results[si].hasLeaf = hasLeaf
 		}(si, seg)
 	}
 	wg.Wait()
 
 	// Assemble final siblings and leaf hash from segment results.
-	var leafHash *big.Int
+	var leafHash fr.Element
+	leafHashSet := false
+	siblingSet := make([]bool, csmt.Depth)
 	for _, res := range results {
 		for lvl, sib := range res.siblings {
 			siblings[lvl] = sib
+			siblingSet[lvl] = true
 		}
-		if res.leafHash != nil {
+		if res.hasLeaf {
 			leafHash = res.leafHash
+			leafHashSet = true
 		}
 	}
 
-	// Fill any remaining nil siblings with zero hashes (e.g. if a segment
-	// produced no entries for certain levels due to empty subtrees).
-	for i, s := range siblings {
-		if s == nil {
+	// Fill any remaining unset siblings with zero hashes.
+	for i := 0; i < csmt.Depth; i++ {
+		if !siblingSet[i] {
 			siblings[i] = csmt.ZeroHashes[i]
 		}
 	}
-	if leafHash == nil {
+	if !leafHashSet {
 		leafHash = csmt.ZeroHashes[0]
 	}
 
@@ -347,15 +357,15 @@ func (csmt *CheckpointedSMT) buildSegments() []segment {
 }
 
 // rebuildBottomEntries hashes chunks in parallel for the bottom gap.
-// Returns the base-level entries map and the leaf hash at leafIndex.
+// Writes results into baseEntries and baseSet slices.
 func (csmt *CheckpointedSMT) rebuildBottomEntries(
 	baseStart, subtreeSize, leafIndex int,
 	readChunk func(int) []byte,
-	hashLeaf HashFunc,
+	hashLeaf HashFuncFr,
 	numSegments int,
-) (map[int]*big.Int, *big.Int) {
-	hashes := make([]*big.Int, subtreeSize)
-
+	baseEntries []fr.Element,
+	baseSet []bool,
+) {
 	// Worker pool: reserve one core per non-bottom segment so they can
 	// run truly in parallel with the leaf hashing.
 	numWorkers := runtime.NumCPU()
@@ -378,9 +388,10 @@ func (csmt *CheckpointedSMT) rebuildBottomEntries(
 			for localIdx := range work {
 				absIdx := baseStart + localIdx
 				if absIdx < csmt.NumLeaves {
-					hashes[localIdx] = hashLeaf(readChunk(absIdx))
+					baseEntries[localIdx] = hashLeaf(readChunk(absIdx))
+					baseSet[localIdx] = true
 				}
-				// nil entries → zero leaf hash (handled during gap build)
+				// unset entries → zero leaf hash (handled during gap build)
 			}
 		}()
 	}
@@ -389,69 +400,67 @@ func (csmt *CheckpointedSMT) rebuildBottomEntries(
 	}
 	close(work)
 	leafWg.Wait()
-
-	// Collect into base entries map.
-	baseEntries := make(map[int]*big.Int, subtreeSize)
-	for i, h := range hashes {
-		if h != nil {
-			baseEntries[baseStart+i] = h
-		}
-	}
-
-	// Extract the leaf hash.
-	localOffset := leafIndex - baseStart
-	var leafHash *big.Int
-	if localOffset >= 0 && localOffset < subtreeSize && hashes[localOffset] != nil {
-		leafHash = hashes[localOffset]
-	} else {
-		leafHash = csmt.ZeroHashes[0]
-	}
-
-	return baseEntries, leafHash
 }
 
 // buildGap constructs intermediate levels from baseEntries and extracts the
 // sibling hash at each level for the proof path of leafIndex.
 func (csmt *CheckpointedSMT) buildGap(
-	baseEntries map[int]*big.Int,
+	baseEntries []fr.Element,
+	baseSet []bool,
 	baseLvl, gapDepth, leafIndex int,
-) map[int]*big.Int {
-	segSiblings := make(map[int]*big.Int, gapDepth)
-	currentEntries := baseEntries
+) map[int]fr.Element {
+	segSiblings := make(map[int]fr.Element, gapDepth)
+
+	curEntries := baseEntries
+	curSet := baseSet
+	curSize := len(baseEntries)
 
 	for relLvl := 0; relLvl < gapDepth; relLvl++ {
 		absLvl := baseLvl + relLvl
 
 		// Extract sibling at this level.
 		nodeIdx := leafIndex >> absLvl
-		sibIdx := nodeIdx ^ 1
-		if h, ok := currentEntries[sibIdx]; ok {
-			segSiblings[absLvl] = h
+		// Compute local index relative to the current subtree
+		localNode := nodeIdx & ((1 << (gapDepth - relLvl)) - 1)
+		localSib := localNode ^ 1
+		if localSib < curSize && curSet[localSib] {
+			segSiblings[absLvl] = curEntries[localSib]
 		} else {
 			segSiblings[absLvl] = csmt.ZeroHashes[absLvl]
 		}
 
 		// Build next level from current entries.
-		nextEntries := make(map[int]*big.Int)
-		parentIndices := make(map[int]bool)
-		for idx := range currentEntries {
-			parentIndices[idx/2] = true
-		}
-		for parentIdx := range parentIndices {
-			leftIdx := parentIdx * 2
-			rightIdx := parentIdx*2 + 1
+		nextSize := (curSize + 1) / 2
+		nextEntries := make([]fr.Element, nextSize)
+		nextSet := make([]bool, nextSize)
+		for p := 0; p < nextSize; p++ {
+			leftIdx := p * 2
+			rightIdx := p*2 + 1
 
-			left, ok := currentEntries[leftIdx]
-			if !ok {
+			leftOK := leftIdx < curSize && curSet[leftIdx]
+			rightOK := rightIdx < curSize && curSet[rightIdx]
+
+			if !leftOK && !rightOK {
+				continue
+			}
+
+			var left, right fr.Element
+			if leftOK {
+				left = curEntries[leftIdx]
+			} else {
 				left = csmt.ZeroHashes[absLvl]
 			}
-			right, ok := currentEntries[rightIdx]
-			if !ok {
+			if rightOK {
+				right = curEntries[rightIdx]
+			} else {
 				right = csmt.ZeroHashes[absLvl]
 			}
-			nextEntries[parentIdx] = HashNodes(left, right)
+			nextEntries[p] = HashNodesFr(left, right)
+			nextSet[p] = true
 		}
-		currentEntries = nextEntries
+		curEntries = nextEntries
+		curSet = nextSet
+		curSize = nextSize
 	}
 
 	return segSiblings

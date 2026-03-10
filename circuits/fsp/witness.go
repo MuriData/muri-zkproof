@@ -2,10 +2,10 @@ package fsp
 
 import (
 	"fmt"
-	"math/big"
 
 	"github.com/MuriData/muri-zkproof/pkg/crypto"
 	"github.com/MuriData/muri-zkproof/pkg/merkle"
+	"github.com/consensys/gnark-crypto/ecc/bn254/fr"
 	"github.com/consensys/gnark/frontend"
 )
 
@@ -57,8 +57,7 @@ func prepareBoundaryProof(smt *merkle.SparseMerkleTree, leafIndex int) BoundaryM
 }
 
 // HashChunk hashes a single chunk using Poseidon2 with domain tag = 1
-// (real leaf) and randomness = 1. This is the leaf hash function used by
-// the sparse Merkle tree.
-func HashChunk(chunk []byte) *big.Int {
-	return crypto.HashWithDomainTag(crypto.DomainTagReal, chunk, big.NewInt(1), ElementSize, NumChunks)
+// (real leaf). This is the leaf hash function used by the sparse Merkle tree.
+func HashChunk(chunk []byte) fr.Element {
+	return crypto.HashLeafFr(crypto.DomainTagReal, chunk, ElementSize, NumChunks)
 }

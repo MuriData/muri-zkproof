@@ -42,15 +42,15 @@ const (
 )
 
 // zeroLeafHash is the Poseidon2 hash for padding leaves, computed once at init.
-var zeroLeafHash *big.Int
+var zeroLeafHash fr.Element
 
 func init() {
-	zeroLeafHash = crypto.ComputeZeroLeafHash(elementSize, numElements)
+	zeroLeafHash = crypto.ComputeZeroLeafHashFr(elementSize, numElements)
 }
 
 // hashChunk hashes a single 16 KB chunk into a leaf hash.
-func hashChunk(chunk []byte) *big.Int {
-	return crypto.HashWithDomainTag(crypto.DomainTagReal, chunk, big.NewInt(1), elementSize, numElements)
+func hashChunk(chunk []byte) fr.Element {
+	return crypto.HashLeafFr(crypto.DomainTagReal, chunk, elementSize, numElements)
 }
 
 // buildSMT splits file bytes into chunks and builds the sparse Merkle tree.
@@ -68,15 +68,12 @@ func jsUint8ArrayToBytes(val js.Value) []byte {
 }
 
 // deserializeLeafHashes converts concatenated 32-byte big-endian field element
-// bytes into a slice of *big.Int leaf hashes.
-func deserializeLeafHashes(data []byte) []*big.Int {
+// bytes into a slice of fr.Element leaf hashes.
+func deserializeLeafHashes(data []byte) []fr.Element {
 	n := len(data) / 32
-	hashes := make([]*big.Int, n)
+	hashes := make([]fr.Element, n)
 	for i := 0; i < n; i++ {
-		var elem fr.Element
-		elem.SetBytes(data[i*32 : (i+1)*32])
-		hashes[i] = new(big.Int)
-		elem.BigInt(hashes[i])
+		hashes[i].SetBytes(data[i*32 : (i+1)*32])
 	}
 	return hashes
 }
@@ -170,7 +167,7 @@ func fspProveAndCompress(smt *merkle.SparseMerkleTree, pkBytes, vkBytes []byte) 
 
 	// Build JS result.
 	result := js.Global().Get("Object").New()
-	result.Set("root", smt.Root.Text(10))
+	result.Set("root", smt.RootBigInt().Text(10))
 	result.Set("numChunks", smt.NumLeaves)
 
 	proofArray := js.Global().Get("Array").New(4)
@@ -212,7 +209,7 @@ func computeFileRootJS(_ js.Value, args []js.Value) any {
 			}
 
 			result := js.Global().Get("Object").New()
-			result.Set("root", smt.Root.Text(10))
+			result.Set("root", smt.RootBigInt().Text(10))
 			result.Set("numChunks", smt.NumLeaves)
 			resolve.Invoke(result)
 		}()
@@ -254,7 +251,7 @@ func generateFSPProofJS(_ js.Value, args []js.Value) any {
 			}
 
 			reportProgress("root", map[string]any{
-				"root":      smt.Root.Text(10),
+				"root":      smt.RootBigInt().Text(10),
 				"numChunks": smt.NumLeaves,
 			})
 
@@ -300,9 +297,7 @@ func hashChunksJS(_ js.Value, args []js.Value) any {
 			buf := make([]byte, len(chunks)*32)
 			for i, chunk := range chunks {
 				h := hashChunk(chunk)
-				var elem fr.Element
-				elem.SetBigInt(h)
-				b := elem.Bytes()
+				b := h.Bytes()
 				copy(buf[i*32:(i+1)*32], b[:])
 			}
 
@@ -346,7 +341,7 @@ func computeRootFromHashesJS(_ js.Value, args []js.Value) any {
 			}
 
 			result := js.Global().Get("Object").New()
-			result.Set("root", smt.Root.Text(10))
+			result.Set("root", smt.RootBigInt().Text(10))
 			result.Set("numChunks", numLeaves)
 			resolve.Invoke(result)
 		}()
@@ -392,7 +387,7 @@ func generateFSPProofFromHashesJS(_ js.Value, args []js.Value) any {
 			}
 
 			reportProgress("root", map[string]any{
-				"root":      smt.Root.Text(10),
+				"root":      smt.RootBigInt().Text(10),
 				"numChunks": smt.NumLeaves,
 			})
 
