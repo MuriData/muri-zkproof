@@ -13,6 +13,9 @@ Zero-knowledge proof circuits and tooling that power MuriData's decentralized st
 | Circuit | Package | Description |
 |---------|---------|-------------|
 | **PoI** (Proof of Integrity) | `circuits/poi` | Proves 8 parallel Merkle openings selected via bit-sliced randomness, with Poseidon2 aggregate commitment and hash-based key ownership |
+| **Archive MURI** | `circuits/archive_muri` | Verifies the sequential two-pass (L→R, R→L) sealing transform via route-based DAG tracing |
+| **Archive PoI** | `circuits/archive_poi` | Validates ongoing storage for replicas sealed under the Archive MURI protocol |
+| **FSP** (File Size Proof) | `circuits/fsp` | Certifies file chunk counts (`numChunks`) at order placement |
 
 ## How it works (PoI circuit)
 1. **Multi-leaf opening** – Each proof opens **8 leaves** (`OpeningsCount = 8`) in parallel. Leaf indices are derived via bit-slicing: opening `k` uses randomness bits `[k*20 .. k*20+19]` to select its leaf. All 8 openings are always active — for small files, multiple openings naturally hit the same leaf via modular wrapping. This gives dramatically better detection probability for missing data while keeping the on-chain verification cost constant (Groth16 pairing check is O(1)).
